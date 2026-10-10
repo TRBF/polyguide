@@ -1,8 +1,9 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { logger } from 'hono/logger';
+import { bodyLimit } from 'hono/body-limit';
 import { loadGraph } from './graphStore';
-import { mockAiRoutes, mockRoutes } from './mock';
+import { mockRoutes } from './mock';
 import { devRoutes } from './devCompare';
 import { apiRoutes } from './routes';
 
@@ -11,15 +12,20 @@ const USE_MOCK = process.env.USE_MOCK === '1';
 
 const app = new Hono();
 app.use('*', logger());
+// Frames are ~150 KB; reject anything absurd before it reaches the OpenAI call.
+app.use('/api/*', bodyLimit({ maxSize: 2 * 1024 * 1024, onError: (c) => c.json({ ok: false, reason: 'invalid_request', message: 'Request too large.' }, 413) }));
 
 if (USE_MOCK) {
   app.route('/api', mockRoutes);
 } else {
   loadGraph();
   app.route('/api', apiRoutes);
-  app.route('/api', devRoutes);
+  // /dev/compare calls ETH at runtime; keep it off unless explicitly enabled (the app may sit behind a public tunnel).
+  if (process.env.ENABLE_DEV_ROUTES === '1') app.route('/api', devRoutes);
   // TODO(track-B): replace with app.route('/api', aiRoutes) from ./ai once it lands.
-  app.route('/api', mockAiRoutes);
+  // Until Track B's aiRoutes land, report AI as disabled. Never serve canned vision results next to real routing.
+  app.post('/api/vision/check', (c) => c.json({ ok: false, reason: 'disabled', message: 'Camera AI is not available yet.' }));
+  app.post('/api/intent', (c) => c.json({ type: 'unknown', source: 'llm' }));
 }
 
 app.onError((err, c) => {

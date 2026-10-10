@@ -9,6 +9,8 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
+    // Tunnel hostnames (cloudflared/ngrok) are otherwise rejected by Vite's host check.
+    allowedHosts: true,
     proxy: { '/api': 'http://localhost:8787' },
   },
 });

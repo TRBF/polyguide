@@ -25,7 +25,7 @@ ETH PolyMaps ArcGIS REST (public, undocumented): `https://arcgis-prd-web.ethz.ch
 ```bash
 corepack enable          # provides pnpm (pinned in package.json)
 pnpm install
-pnpm dev:server          # Hono on :8787 (USE_MOCK=1 pnpm dev:server for fixtures)
+pnpm dev:server          # Hono on :8787 (pnpm --filter @polyguide/server dev:mock for fixtures)
 pnpm dev:web             # Vite on https://localhost:5173, proxies /api → :8787
 pnpm -r typecheck        # before every commit
 ```

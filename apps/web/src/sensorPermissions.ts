@@ -5,31 +5,19 @@
  */
 export async function requestSensorPermissions(): Promise<string[]> {
   const granted: string[] = [];
-  const orientation = DeviceOrientationEvent as typeof DeviceOrientationEvent & {
-    requestPermission?: () => Promise<PermissionState>;
-  };
-  const motion = DeviceMotionEvent as typeof DeviceMotionEvent & {
-    requestPermission?: () => Promise<PermissionState>;
-  };
-  try {
-    if (orientation.requestPermission) {
-      const result = await orientation.requestPermission();
-      if (result === 'granted') granted.push('orientation');
-    } else if ('DeviceOrientationEvent' in window) {
-      granted.push('orientation');
-    }
-  } catch {
-    // Permission is optional; navigation can still be advanced by voice or touch.
-  }
-  try {
-    if (motion.requestPermission) {
-      const result = await motion.requestPermission();
-      if (result === 'granted') granted.push('motion');
-    } else if ('DeviceMotionEvent' in window) {
-      granted.push('motion');
-    }
-  } catch {
-    // Permission is optional; navigation can still be advanced by voice or touch.
-  }
+  const orientation = (typeof DeviceOrientationEvent === 'undefined' ? undefined : DeviceOrientationEvent) as
+    | (typeof DeviceOrientationEvent & { requestPermission?: () => Promise<PermissionState> })
+    | undefined;
+  const motion = (typeof DeviceMotionEvent === 'undefined' ? undefined : DeviceMotionEvent) as
+    | (typeof DeviceMotionEvent & { requestPermission?: () => Promise<PermissionState> })
+    | undefined;
+  // Both requests start in the same tick so neither loses the user gesture on iOS.
+  const ask = (api: typeof orientation | typeof motion, name: string) =>
+    !api
+      ? Promise.resolve()
+      : api.requestPermission
+        ? api.requestPermission().then((r) => { if (r === 'granted') granted.push(name); }).catch(() => undefined)
+        : Promise.resolve().then(() => { granted.push(name); });
+  await Promise.all([ask(orientation, 'orientation'), ask(motion, 'motion')]);
   return granted;
 }

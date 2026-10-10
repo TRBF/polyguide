@@ -29,7 +29,7 @@ export function planRoute(graph: Graph, input: PlanInput): RouteResult {
       ok: false,
       reason: 'no_route',
       message: stepFree
-        ? `No step-free route found from ${from.name} to ${to.name}.`
+        ? `No step-free route found from ${from.name} to ${to.name}. In the ETH data, some rooms, such as those on half floors, can only be reached by stairs.`
         : `No route found from ${from.name} to ${to.name}.`,
     };
   }

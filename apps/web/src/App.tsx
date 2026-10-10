@@ -51,6 +51,7 @@ function listPlaceNames(places: Place[]): string {
 
 export function App() {
   const [preferences, setPreferences] = useState<Preferences>(() => loadPreferences());
+  const [started, setStarted] = useState(false);
   const [screen, setScreen] = useState<Screen>('needs');
   const [screenBeforeSettings, setScreenBeforeSettings] = useState<Screen>('needs');
   const [origin, setOrigin] = useState<Place | null>(null);
@@ -106,12 +107,34 @@ export function App() {
   }, [preferences]);
 
   useEffect(() => {
-    if (screen === 'needs') {
-      speak(entrySpeech.needs, 'info');
+    // The welcome is spoken from the start button's click (browsers block speech before a gesture).
+    if (!started || screen === 'needs') return;
+    if (!preferences.settings.voiceFirst) return;
+    if (screen === 'preview' && route) {
+      const minutes = Math.max(1, Math.round(route.totalDurationS / 60));
+      const summary = [`Route to ${route.to.name}: ${Math.round(route.totalDistanceM)} metres, about ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`, ...route.profileSummary.map((s) => `${s}.`), ...route.warnings].join(' ');
+      announce(`${summary} ${entrySpeech.preview}`, 'info');
       return;
     }
-    if (preferences.settings.voiceFirst) announce(entrySpeech[screen], 'info');
-  }, [announce, preferences.settings.voiceFirst, screen]);
+    announce(entrySpeech[screen], 'info');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [announce, started, preferences.settings.voiceFirst, screen, route?.routeId]);
+
+  // Browser/Android Back steps through the app's screens instead of leaving it mid-route.
+  const moveBackRef = useRef<() => void>(() => undefined);
+  useEffect(() => {
+    if (screen !== 'needs') window.history.pushState({ screen }, '');
+  }, [screen]);
+  useEffect(() => {
+    const onPop = () => moveBackRef.current();
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  function beginApp(): void {
+    setStarted(true);
+    speak(entrySpeech.needs, 'info');
+  }
 
   useEffect(() => {
     if (startAfterRoute && screen === 'navigate' && route) {
@@ -182,10 +205,22 @@ export function App() {
     setScreen('preview');
   }
 
+  /** Server errors are announced, never replaced by stale or fake results. */
+  async function fetchPlaces(query: string): Promise<Place[] | null> {
+    try {
+      return await api.places(query);
+    } catch {
+      announce('The PolyGuide server is unavailable. Please try again.');
+      return null;
+    }
+  }
+
   async function findOrigins(query: string): Promise<Place[]> {
     setBusy(true);
-    const matches = await api.places(query);
+    const found = await fetchPlaces(query);
     setBusy(false);
+    if (!found) return [];
+    const matches = found;
     const filtered = matches.filter((place) => place.kind === 'room' || place.kind === 'entrance' || place.kind === 'poi');
     setOriginMatches(filtered.slice(0, 5));
     return filtered.slice(0, 5);
@@ -193,9 +228,10 @@ export function App() {
 
   async function findDestinations(query: string, byVoice = false): Promise<Place[]> {
     setBusy(true);
-    const matches = await api.places(query);
+    const found = await fetchPlaces(query);
     setBusy(false);
-    const filtered = matches.filter((place) => place.kind === 'room' || place.kind === 'poi');
+    if (!found) return [];
+    const filtered = found.filter((place) => place.kind === 'room' || place.kind === 'poi');
     setDestinationMatches(filtered.slice(0, 5));
     if (!filtered.length) {
       announce(`I couldn't find ${query}. Try another room number or point of interest.`);
@@ -223,7 +259,7 @@ export function App() {
       announce('Enable camera, motion and microphone before scanning a room sign.');
       return;
     }
-    setScreen('where');
+    if (screen !== 'navigate') setScreen('where');
     setCameraBusy(true);
     setCameraMessage('Camera is checking for a room sign…');
     try {
@@ -244,7 +280,7 @@ export function App() {
       const localized = await api.localize({ roomText });
       if (!localized.ok) throw new Error(localized.message);
       let matchedPlace = localized.place;
-      if (!matchedPlace) matchedPlace = (await api.places(roomText))[0];
+      if (!matchedPlace) matchedPlace = (await fetchPlaces(roomText))?.[0];
       if (matchedPlace) {
         setOrigin(matchedPlace);
         setOriginQuery(matchedPlace.name);
@@ -312,8 +348,13 @@ export function App() {
         speak(vision.utterance, 'vision');
       }
       if (vision.offRouteSuspected && vision.detectedRoomNames[0]) {
-        const localized = await api.localize({ roomText: vision.detectedRoomNames[0] });
-        if (localized.ok) await rerouteFromNode(localized.nodeId, vision.detectedRoomNames[0]);
+        const sign = vision.detectedRoomNames[0];
+        const localized = await api.localize({ roomText: sign });
+        if (localized.ok && localized.confidence >= 0.9) await rerouteFromNode(localized.nodeId, sign);
+        else if (localized.ok) {
+          // A fuzzy match could be a misread sign; ask instead of rerouting from the wrong room.
+          announce(`I may have read ${sign}, but I am not sure. Say "I am at ${localized.place?.name ?? sign}" to reroute from there.`, 'vision');
+        }
       }
     } catch (error) {
       const text = error instanceof Error ? error.message : 'The camera check did not finish.';
@@ -342,9 +383,9 @@ export function App() {
         announce(result.message);
         return;
       }
-      const matchedPlace = result.place ?? (await api.places('main entrance'))[0];
-      if (matchedPlace) await chooseOrigin(matchedPlace);
-      else announce('GPS found a nearby outdoor node. Choose a room before starting your route.');
+      // An outdoor GPS fix has no room; never guess an entrance. The user picks a room or entrance.
+      if (result.place) await chooseOrigin(result.place);
+      else announce('GPS found you outdoors. Say or search for the entrance or room you are heading into to set your starting point.');
     }, () => {
       setBusy(false);
       announce('GPS could not find an accurate outdoor location. Choose a room or scan a sign.');
@@ -377,9 +418,15 @@ export function App() {
       navigate: 'preview',
       arrived: 'destination',
     };
+    if (screen === 'navigate') {
+      guidance.stop();
+      releaseScreenWakeLock();
+    }
     const target = previous[screen];
     if (target) setScreen(target);
   }
+
+  moveBackRef.current = moveBack;
 
   function openSettings(): void {
     setScreenBeforeSettings(screen);
@@ -387,7 +434,7 @@ export function App() {
   }
 
   async function dispatchCommand(transcript: string): Promise<void> {
-    const normalizedCommand = transcript.trim().toLowerCase().replace(/[?!.,]+$/g, '');
+    const normalizedCommand = transcript.trim().toLowerCase().replace(/[‘’]/g, "'").replace(/[?!.,]+$/g, '');
     if (/^(open )?settings$/.test(normalizedCommand)) {
       openSettings();
       return;
@@ -532,6 +579,8 @@ export function App() {
         return;
       }
       default:
+        // Continuous listening hears room chatter; stay quiet instead of nagging while walking.
+        if (screen === 'navigate') return;
         announce('I did not understand that command. Say help for examples, or type the command.');
     }
   }
@@ -546,6 +595,11 @@ export function App() {
 
   function startNewDestination(): void {
     releaseScreenWakeLock();
+    // The user is now at the old destination, so the next route starts there.
+    if (route) {
+      setOrigin(route.to);
+      setOriginQuery(route.to.name);
+    }
     setRoute(null);
     setDestination(null);
     setDestinationQuery('');
@@ -575,8 +629,21 @@ export function App() {
     );
   }
 
+  if (!started) {
+    return (
+      <div className="app-shell">
+        <main className="main-content">
+          <button type="button" className="button button-primary start-gate" onClick={beginApp} autoFocus>
+            Tap here to start PolyGuide
+          </button>
+          <p className="lead">PolyGuide helps you find your way inside ETH Zürich. It supplements your cane or guide dog and does not detect obstacles.</p>
+        </main>
+      </div>
+    );
+  }
+
   return (
-    <div className={`app-shell${preferences.settings.voiceFirst ? ' app-voice-first' : ''}`}>
+    <div className={`app-shell${preferences.settings.voiceFirst ? ' app-voice-first' : ''}${profile.needs.includes('lowVision') ? ' app-low-vision' : ''}`}>
       <header className="app-header">
         <a className="brand" href="#top" onClick={(event) => event.preventDefault()} aria-label="PolyGuide home">
           <span className="brand-mark" aria-hidden="true">P</span>

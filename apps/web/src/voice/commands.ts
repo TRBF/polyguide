@@ -1,7 +1,7 @@
 import type { Intent } from '@polyguide/shared';
 
 export function parseCommand(transcript: string): Intent | null {
-  const text = transcript.trim().toLowerCase().replace(/[?!.,]+$/g, '');
+  const text = transcript.trim().toLowerCase().replace(/[‘’]/g, "'").replace(/[?!.,]+$/g, '');
   if (!text) return null;
   if (/^(next|continue|done|i am done|i'm done|start|new destination|new route)$/.test(text)) return { type: 'next', source: 'regex' };
   if (/^(back|go back|previous)$/.test(text)) return { type: 'back', source: 'regex' };

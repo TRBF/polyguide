@@ -12,7 +12,7 @@ import {
   type VisionRequest,
   type VisionResponse,
 } from '@polyguide/shared';
-import { mockLevels, mockLocalize, mockPlaces, mockRouteWheelchair, mockVisionResult } from '@polyguide/shared/src/fixtures';
+import { mockPlaces, mockRouteWheelchair } from '@polyguide/shared/src/fixtures';
 
 export type FloorMap = {
   type: 'FeatureCollection';
@@ -33,45 +33,6 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   });
   if (!response.ok) throw new Error(`Request failed (${response.status})`);
   return (await response.json()) as T;
-}
-
-function localSearch(query: string, kind?: Place['kind']): Place[] {
-  const pool = kind ? mockPlaces.filter((place) => place.kind === kind) : mockPlaces;
-  if (!query.trim()) return pool;
-  const normalized = normalizeSearch(query);
-  return pool
-    .map((place) => ({ place, score: Math.min(...[place.name, place.label ?? '', ...place.aliases].map((candidate) => matchScore(normalized, normalizeSearch(candidate)))) }))
-    .filter((match) => match.score <= 0.55)
-    .sort((a, b) => a.score - b.score)
-    .map((match) => match.place);
-}
-
-function normalizeSearch(value: string): string {
-  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-}
-
-function editDistance(a: string, b: string): number {
-  const row = Array.from({ length: b.length + 1 }, (_, index) => index);
-  for (let i = 1; i <= a.length; i += 1) {
-    let diagonal = row[0];
-    row[0] = i;
-    for (let j = 1; j <= b.length; j += 1) {
-      const previous = row[j];
-      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
-      diagonal = previous;
-    }
-  }
-  return row[b.length];
-}
-
-function matchScore(query: string, candidate: string): number {
-  if (!query || !candidate) return 1;
-  if (candidate === query) return 0;
-  if (candidate.startsWith(query) || candidate.includes(query)) return 0.1;
-  const queryWords = query.split(' ');
-  if (queryWords.every((word) => candidate.includes(word))) return 0.18;
-  const distance = editDistance(query.replace(/ /g, ''), candidate.replace(/ /g, ''));
-  return distance / Math.max(query.length, candidate.length);
 }
 
 function fixtureRoute(from: Place, to: Place, profile: Profile): Extract<RouteResult, { ok: true }> {
@@ -146,30 +107,41 @@ function fixtureRoute(from: Place, to: Place, profile: Profile): Extract<RouteRe
   };
 }
 
+/** Never fabricate data: when the server is unreachable we report it, so the user is told instead of misled. */
+const UNAVAILABLE = 'The PolyGuide server is unavailable. Please try again.';
+
+async function postJsonLenient<T>(url: string, body: unknown): Promise<T | null> {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  try {
+    return (await response.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
 export const api = {
   async levels(): Promise<Level[]> {
-    try {
-      return await getJson<Level[]>(API.levels);
-    } catch {
-      return mockLevels;
-    }
+    return getJson<Level[]>(API.levels);
   },
 
+  /** Throws when the server is unreachable; callers show an error instead of stale/fake places. */
   async places(query = '', kind?: Place['kind']): Promise<Place[]> {
     const search = new URLSearchParams({ q: query, limit: '30' });
     if (kind) search.set('kind', kind);
-    try {
-      return await getJson<Place[]>(`${API.places}?${search}`);
-    } catch {
-      return localSearch(query, kind);
-    }
+    return getJson<Place[]>(`${API.places}?${search}`);
   },
 
   async route(request: RouteRequest): Promise<RouteResult> {
     const fromRef = request.from;
     const toRef = request.to;
     try {
-      const result = await postJson<RouteResult>(API.route, request);
+      const result = await postJsonLenient<RouteResult>(API.route, request);
+      if (!result) return { ok: false, reason: 'server_error', message: UNAVAILABLE };
+      // Only the server's own mock mode (USE_MOCK=1) returns r_mock_ ids; fixture routing stays a dev aid.
       if (result.ok && result.routeId.startsWith('r_mock_') && toRef.type === 'place' && (fromRef.type === 'place' || fromRef.type === 'node')) {
         const from = fromRef.type === 'place'
           ? mockPlaces.find((place) => place.id === fromRef.placeId)
@@ -179,35 +151,28 @@ export const api = {
       }
       return result;
     } catch {
-      if (fromRef.type === 'place' && toRef.type === 'place') {
-        const from = mockPlaces.find((place) => place.id === fromRef.placeId) ?? mockPlaces[0];
-        const to = mockPlaces.find((place) => place.id === toRef.placeId) ?? mockPlaces[2];
-        return fixtureRoute(from, to, request.profile);
-      }
-      return { ok: false, reason: 'server_error', message: 'The route service is unavailable. Please try again.' };
+      return { ok: false, reason: 'server_error', message: UNAVAILABLE };
     }
   },
 
   async localize(request: LocalizeRequest): Promise<LocalizeResult> {
     try {
-      return await postJson<LocalizeResult>(API.localize, request);
+      const result = await postJsonLenient<LocalizeResult>(API.localize, request);
+      if (result) return result;
     } catch {
-      if (request.roomText) {
-        const matches = localSearch(request.roomText);
-        const exact = matches[0];
-        if (exact) return { ok: true, place: exact, nodeId: exact.nodeId, levelId: exact.levelId, confidence: 0.82, method: 'room_text', alternatives: matches.slice(1, 4) };
-        return { ok: false, reason: 'no_match', message: 'I could not match that room sign. Try reading or saying its room number.' };
-      }
-      return mockLocalize;
+      // fall through
     }
+    return { ok: false, reason: 'no_match', message: UNAVAILABLE };
   },
 
   async vision(request: VisionRequest): Promise<VisionResponse> {
     try {
-      return await postJson<VisionResponse>(API.vision, request);
+      const result = await postJsonLenient<VisionResponse>(API.vision, request);
+      if (result) return result;
     } catch {
-      return { ok: true, ...mockVisionResult, latencyMs: 1 };
+      // fall through
     }
+    return { ok: false, reason: 'model_error', message: 'The camera check is unavailable right now.' };
   },
 
   async intent(request: IntentRequest): Promise<Intent> {

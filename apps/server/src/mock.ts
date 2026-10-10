@@ -127,7 +127,7 @@ mockAiRoutes.post('/intent', async (c) => {
   const u = body?.utterance?.trim() ?? '';
   const nav = u.match(/^(?:navigate to|take me to|go to)\s+(.+)$/i);
   if (nav) return c.json<Intent>({ type: 'navigate_to', target: nav[1], source: 'llm' });
-  const at = u.match(/^(?:i'?m at|i am at|i'?m next to)\s+(.+)$/i);
+  const at = u.match(/^(?:i['’]?m at|i am at|i['’]?m next to)\s+(.+)$/i);
   if (at) return c.json<Intent>({ type: 'set_location', target: at[1], source: 'llm' });
   const hit = INTENT_PATTERNS.find(([re]) => re.test(u));
   return c.json<Intent>({ type: hit?.[1] ?? 'unknown', source: 'llm' });

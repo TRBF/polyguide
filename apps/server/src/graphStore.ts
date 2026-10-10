@@ -167,13 +167,14 @@ export function getRouteNodeIds(routeId: RouteId): NodeId[] {
 
 /**
  * Is the place within radiusM of the route (on the same level)? Used for vision off-route checks:
- * a room sign that is NOT near the route suggests the user went the wrong way.
+ * a room sign that is NOT near the route (false) suggests the user went the wrong way; null means unknown.
  */
-export function isNearRoute(routeId: RouteId, placeId: PlaceId, radiusM = 10): boolean {
+export function isNearRoute(routeId: RouteId, placeId: PlaceId, radiusM = 10): boolean | null {
   const r = routeStore.get(routeId);
   const g = getGraph();
   const place = getPlace(placeId);
-  if (!r || !place) return false;
+  // null = unknown (route evicted or server restarted): callers must NOT treat this as "off route".
+  if (!r || !place) return null;
   const node = g.nodes.get(place.nodeId);
   const targets = [g.xy(place), ...(node ? [node] : [])];
   for (const s of r.steps) {

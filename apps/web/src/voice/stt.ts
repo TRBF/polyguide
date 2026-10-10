@@ -4,6 +4,7 @@ interface RecognitionResultLike {
 }
 
 interface RecognitionEventLike {
+  readonly resultIndex: number;
   readonly results: ArrayLike<RecognitionResultLike>;
 }
 

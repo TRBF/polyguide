@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type FormEvent } from 'react';
 import { createRecognition, type RecognitionLike } from './voice/stt';
+import { speechRecentlyActive } from './voice/tts';
 
 interface VoiceBarProps {
   voiceFirst: boolean;
@@ -19,6 +20,8 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
   const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [voiceError, setVoiceError] = useState('');
+  /** True while continuous listening should survive the browser ending a session after silence. */
+  const keepAlive = useRef(false);
 
   onCommandRef.current = onCommand;
 
@@ -31,6 +34,7 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
         recognition.continuous = true;
         recognition.interimResults = false;
         setVoiceError('');
+        keepAlive.current = true;
         recognition.start();
         setListening(true);
       } catch {
@@ -46,23 +50,37 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
     if (!recognition) return;
     recognition.onresult = (event) => {
       const words: string[] = [];
-      for (let index = 0; index < event.results.length; index += 1) {
+      // Only results added since the last event; continuous sessions accumulate the whole history.
+      for (let index = event.resultIndex ?? 0; index < event.results.length; index += 1) {
         const result = event.results[index];
         if (result?.isFinal && result[0]?.transcript) words.push(result[0].transcript.trim());
       }
       const phrase = words.join(' ');
-      if (phrase) {
+      // Ignore what the app's own voice just said.
+      if (phrase && !speechRecentlyActive()) {
         setTranscript(phrase);
         setVoiceError('');
         onCommandRef.current(phrase);
       }
     };
     recognition.onerror = (event) => {
+      if (event.error === 'no-speech' || event.error === 'aborted') return;
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') keepAlive.current = false;
       setVoiceError(event.error === 'not-allowed' ? 'Microphone access was denied. Type the same command below.' : 'Voice input stopped. Type the same command below.');
       setListening(false);
     };
-    recognition.onend = () => setListening(false);
+    recognition.onend = () => {
+      if (keepAlive.current) {
+        window.setTimeout(() => {
+          if (!keepAlive.current) return;
+          try { recognition.start(); setListening(true); } catch { setListening(false); }
+        }, 300);
+        return;
+      }
+      setListening(false);
+    };
     return () => {
+      keepAlive.current = false;
       recognition.abort();
       recognitionRef.current = null;
     };
@@ -72,6 +90,7 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
     const recognition = recognitionRef.current;
     if (!recognition) return;
     if (listening) {
+      keepAlive.current = false;
       recognition.stop();
       setListening(false);
       return;
@@ -80,6 +99,7 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
       recognition.lang = language === 'de' ? 'de-CH' : 'en-US';
       recognition.continuous = continuous;
       recognition.interimResults = false;
+      keepAlive.current = continuous;
       setTranscript('');
       setVoiceError('');
       recognition.start();
