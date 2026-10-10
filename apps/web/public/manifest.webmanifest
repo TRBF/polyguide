@@ -1,0 +1,10 @@
+{
+  "name": "PolyGuide — ETH Zürich",
+  "short_name": "PolyGuide",
+  "description": "Accessible indoor navigation at ETH Zürich.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f2f5f2",
+  "theme_color": "#075e67",
+  "icons": []
+}
