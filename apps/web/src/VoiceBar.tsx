@@ -11,6 +11,8 @@ interface VoiceBarProps {
 
 export interface VoiceBarHandle {
   startContinuous(): void;
+  /** Ends hands-free listening; a push-to-talk session is left alone. */
+  stopContinuous(): void;
 }
 
 export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function VoiceBar({ voiceFirst, continuous, language, onCommand }, ref) {
@@ -40,6 +42,13 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
       } catch {
         setVoiceError('Voice input could not start. Type the same command below.');
       }
+    },
+    stopContinuous() {
+      const recognition = recognitionRef.current;
+      if (!recognition || !keepAlive.current) return;
+      keepAlive.current = false;
+      recognition.stop();
+      setListening(false);
     },
   }), [language, listening]);
 
