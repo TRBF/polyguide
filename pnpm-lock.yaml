@@ -238,6 +238,19 @@ importers:
 
   packages/shared: {}
 
+  scripts:
+    dependencies:
+      '@polyguide/routing':
+        specifier: workspace:*
+        version: link:../packages/routing
+      '@polyguide/shared':
+        specifier: workspace:*
+        version: link:../packages/shared
+    devDependencies:
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
+
 packages:
 
   '@esbuild/aix-ppc64@0.28.2':

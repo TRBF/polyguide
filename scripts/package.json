@@ -1,0 +1,17 @@
+{
+  "name": "@polyguide/scripts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fetch:eth": "tsx fetch-eth.ts",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@polyguide/routing": "workspace:*",
+    "@polyguide/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
+  }
+}

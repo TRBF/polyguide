@@ -1,0 +1,10 @@
+{
+  "fetchedAt": "2026-10-10T13:39:31.480Z",
+  "source": "https://arcgis-prd-web.ethz.ch/server/rest/services/EGDB",
+  "bbox": [
+    8.546344494547364,
+    47.375302282855266,
+    8.549097323759907,
+    47.37755270042619
+  ]
+}
