@@ -60,7 +60,7 @@ describe('estimatePosition', () => {
   it('uses a sign fix when not navigating', () => {
     const e = estimatePosition({ now: 10_000, fix: { place, source: 'sign', at: 0 }, navigating: false, step: null, stepIndex: 0, progressM: 0 });
     expect(e.request).toEqual({ placeId: 'pl_f33' });
-    expect(e.text).toContain('at HG F 33.5, floor F (room sign read 10 s ago)');
+    expect(e.text).toContain('in the corridor outside the door of HG F 33.5, floor F (room sign read 10 s ago)');
     expect(e.confidence).toBe('high');
   });
 
@@ -68,9 +68,16 @@ describe('estimatePosition', () => {
     const e = estimatePosition({ now: 100_000, fix: { place, source: 'sign', at: 0 }, navigating: true, step: step(), stepIndex: 2, progressM: 50 });
     expect(e.request.levelId).toBe('ETH.HG.F');
     expect(((e.request.lon ?? 0) - 8.548) * kx).toBeCloseTo(50, 0);
-    expect(e.text).toMatch(/about 50 m into step 3 .*±7 m.*last fix: at HG F 33\.5/);
+    expect(e.text).toMatch(/about 50 m into step 3 .*±7 m.*last fix: in the corridor outside the door of HG F 33\.5/);
     const fresh = estimatePosition({ now: 5_000, fix: { place, source: 'sign', at: 0 }, navigating: true, step: step(), stepIndex: 2, progressM: 50 });
     expect(fresh.request).toEqual({ placeId: 'pl_f33' });
+  });
+
+  it('treats a position remembered from an earlier session as a weak hint', () => {
+    const e = estimatePosition({ now: 30 * 60_000, fix: { place, source: 'remembered', at: 0 }, navigating: false, step: null, stepIndex: 0, progressM: 0 });
+    expect(e.confidence).toBe('low');
+    expect(e.text).toContain('remembered from an earlier session 30 min ago; the user has probably moved');
+    expect(e.request).toEqual({ placeId: 'pl_f33' });
   });
 
   it('puts a vertical step at its start', () => {
@@ -109,6 +116,14 @@ describe('formatLiveState', () => {
     expect(t).toContain('Walkable from here: corridor right (73°); corridor left (107°)');
     expect(t).toContain('GPS: ±38 m, 3 s old (too coarse indoors');
     expect(t).toContain('Needs: blind.');
+  });
+
+  it('lists GPS-only candidates on any floor, without pretending to know the floor', () => {
+    const gpsInfo: PositionInfo = { ok: true, levelId: '', floor: 'unknown', nodeId: '', snapM: 35, nearby: [{ placeId: 'e', name: 'Haupteingang HG E', label: 'Main entrance', kind: 'entrance', distM: 12, bearingDeg: 270 }], paths: [], fromGps: true };
+    const t = formatLiveState({ ...base, navigation: undefined, info: gpsInfo });
+    expect(t).toContain('GPS-only candidates (any floor, GPS ±35 m; ask or look to pick one): Main entrance (Haupteingang HG E) ~12 m west.');
+    expect(t).not.toContain('Floor unknown');
+    expect(t).not.toContain('Walkable from here');
   });
 
   it('falls back to compass names without a heading', () => {

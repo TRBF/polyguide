@@ -2,7 +2,7 @@
  * The "[Live state]" message the realtime agent gets before every turn: everything the app knows about where
  * the user is and which way they face, in plain words. Pure functions so they can be unit-tested.
  */
-import type { Place, PositionInfo, RouteStep } from '@polyguide/shared';
+import { useTypeLabel, type Place, type PositionInfo, type RouteStep } from '@polyguide/shared';
 
 /* ───────────── Geometry ───────────── */
 
@@ -84,8 +84,11 @@ export function turnPhrase(turn: number): string {
 
 export interface Fix {
   place: Place;
-  /** How we know: a sign the camera read, the user said so, or the end of a finished route. */
-  source: 'sign' | 'user' | 'route';
+  /**
+   * How we know: a sign the camera read, the user said so, the end of a finished route, a room recognised from ETH
+   * photos, or remembered from an earlier session on this phone (the user may have moved since).
+   */
+  source: 'sign' | 'user' | 'route' | 'photo' | 'remembered';
   at: number;
   /** Rough distance from the place when the fix was taken. */
   distanceM?: number;
@@ -112,8 +115,21 @@ export function estimatePosition(args: {
 }): Estimate {
   const { now, fix, navigating, step, progressM } = args;
   const age = fix ? Math.round((now - fix.at) / 1000) : 0;
-  const how = (f: Fix) => (f.source === 'sign' ? `room sign read ${age} s ago` : f.source === 'user' ? `the user said so ${age} s ago` : `end of the last route, ${age} s ago`);
-  const at = (f: Fix) => `${f.distanceM && f.distanceM > 2 ? `about ${Math.round(f.distanceM)} m from` : 'at'} ${f.place.name}${f.place.label && f.place.kind === 'room' ? ` (${f.place.label})` : ''}`;
+  const ago = age < 120 ? `${age} s ago` : `${Math.round(age / 60)} min ago`;
+  const how = (f: Fix) =>
+    f.source === 'sign' ? `room sign read ${ago}`
+    : f.source === 'user' ? `the user said so ${ago}`
+    : f.source === 'photo' ? `room recognised from ETH photos ${ago}`
+    : f.source === 'remembered' ? `remembered from an earlier session ${ago}; the user has probably moved, confirm before relying on it`
+    : `end of the last route, ${ago}`;
+  // A door sign puts the user in the corridor outside that room, not inside it; the room type lets the agent
+  // notice when what the camera or the user describes does not fit.
+  const kind = (f: Fix) => (f.place.kind === 'room' ? [f.place.label, useTypeLabel(f.place.useType)].filter(Boolean).join(', ') : '');
+  const at = (f: Fix) => {
+    const what = `${f.place.name}${kind(f) ? ` (${kind(f)})` : ''}`;
+    if (f.distanceM && f.distanceM > 2) return `about ${Math.round(f.distanceM)} m from ${what}`;
+    return f.source === 'sign' && f.place.kind === 'room' ? `in the corridor outside the door of ${what}` : `at ${what}`;
+  };
 
   if (navigating && step && !(fix && now - fix.at < FIX_FRESH_MS)) {
     const vertical = step.bearingDeg == null || (step.toLevelId != null && step.toLevelId !== step.levelId);
@@ -128,7 +144,7 @@ export function estimatePosition(args: {
     }
   }
   if (fix) {
-    const confidence = fix.source === 'route' || age < 120 ? 'high' : age < 600 ? 'medium' : 'low';
+    const confidence = fix.source === 'remembered' ? 'low' : fix.source === 'route' || age < 120 ? 'high' : age < 600 ? 'medium' : 'low';
     return { request: { placeId: fix.place.id }, text: `${at(fix)}, floor ${floorOf(fix.place.levelId)} (${how(fix)})`, confidence };
   }
   return { request: {}, text: 'UNKNOWN: no sign read and the user has not said where they are', confidence: 'none' };
@@ -176,7 +192,7 @@ export function formatLiveState(s: LiveStateInput): string {
   }
 
   lines.push(`Position: ${s.estimate.text}. Confidence: ${s.estimate.confidence}.`);
-  if (s.info?.ok) lines.push(`Floor ${s.info.floor}.`);
+  if (s.info?.ok && !s.info.fromGps) lines.push(`Floor ${s.info.floor}.`);
 
   if (h == null) lines.push('Heading: unknown (no compass). Use landmarks and the camera, not degrees.');
   else {
@@ -184,7 +200,9 @@ export function formatLiveState(s: LiveStateInput): string {
     if (n && n.bearingDeg != null) lines.push(`To face the route: ${turnPhrase(turnTo(n.bearingDeg, h))}.`);
   }
 
-  if (s.info?.ok) {
+  if (s.info?.ok && s.info.fromGps) {
+    lines.push(`GPS-only candidates (any floor, GPS ±${s.info.snapM} m; ask or look to pick one): ${s.info.nearby.map((p) => `${p.label && p.kind !== 'room' ? `${p.label} (${p.name})` : p.name} ~${p.distM} m ${compassName(p.bearingDeg)}`).join('; ')}.`);
+  } else if (s.info?.ok) {
     const rel = (b: number) => (h == null ? `${compassName(b)}` : relDirection(b, h));
     if (s.info.nearby.length) {
       lines.push(`Nearby (nearest first; direction relative to where the phone points): ${s.info.nearby.map((p) => `${p.label && p.kind !== 'room' ? p.label : p.name}${p.label && p.kind === 'room' ? ` (${p.label})` : ''} ${Math.round(p.distM)} m ${rel(p.bearingDeg)}`).join('; ')}.`);

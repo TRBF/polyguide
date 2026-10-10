@@ -144,3 +144,30 @@ export function clearRecents(): void {
     // ignore
   }
 }
+
+/* ───────── Last known position (the voice agent's starting hint on the next visit) ───────── */
+
+const LAST_FIX_KEY = 'polyguide.lastFix.v1';
+/** Older than this, the remembered position says nothing about where the user is. */
+const LAST_FIX_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+export function saveLastFix(place: Place, at: number): void {
+  if (place.id.startsWith('node:')) return;
+  try {
+    localStorage.setItem(LAST_FIX_KEY, JSON.stringify({ place, at }));
+  } catch {
+    // A convenience only.
+  }
+}
+
+export function loadLastFix(now = Date.now()): { place: Place; at: number } | null {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(LAST_FIX_KEY) ?? 'null');
+    if (!isRecord(parsed) || !isRecord(parsed.place) || typeof parsed.at !== 'number') return null;
+    const place = parsed.place as unknown as Place;
+    if (typeof place.id !== 'string' || typeof place.name !== 'string' || now - parsed.at > LAST_FIX_MAX_AGE_MS) return null;
+    return { place, at: parsed.at };
+  } catch {
+    return null;
+  }
+}

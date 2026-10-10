@@ -45,10 +45,24 @@ const TOOLS = [
       type: 'object',
       properties: {
         place: { type: 'string', description: 'Room code as on the sign, e.g. "HG F 33", or a named place, e.g. "main entrance", "Audimax".' },
-        evidence: { type: 'string', enum: ['sign', 'landmark', 'user'], description: 'sign = you read it in a photo; landmark = recognised the place; user = they told you.' },
+        evidence: { type: 'string', enum: ['sign', 'landmark', 'photo', 'user'], description: 'sign = you read it in a photo; landmark = recognised the place; photo = identify_room was confident; user = they told you.' },
         distance_m: { type: 'number', description: 'Roughly how far the user is from that sign or place (0 if standing at it).' },
       },
       required: ['place', 'evidence', 'distance_m'],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: 'function',
+    name: 'identify_room',
+    description: 'Which room is the user in? Takes a photo and compares it with ETH Room Information photos of nearby candidate rooms (lecture halls, seminar, computer, meeting rooms and foyer exhibition spaces; corridors and offices have no photos). Use when the user is inside a room and no door sign is in view. Many HG rooms are built in identical pairs, so the result may be a short list of look-alikes.',
+    parameters: {
+      type: 'object',
+      properties: {
+        room_type: { type: 'string', enum: ['Lecture hall', 'Seminars / Courses', 'Computer', 'Meeting room', 'Exhibition space', 'Multipurpose room', 'unknown'], description: 'What the room looks like in the camera frame: tiered fixed seats = Lecture hall; tables for 20-50 = Seminars / Courses; rows of computers = Computer; one table = Meeting room; open hall with displays = Exhibition space.' },
+        candidates: { type: 'array', items: { type: 'string' }, description: 'Rooms you suspect, e.g. ["HG E 1.1", "HG E 1.2"]; empty = chosen from the position estimate.' },
+      },
+      required: ['room_type', 'candidates'],
       additionalProperties: false,
     },
   },
@@ -125,8 +139,14 @@ function buildInstructions(): string {
 Before each user turn you get a system message starting with "[Live state]". It is the truth about the app right now: screen, trip, current step, position estimate and how it was obtained, phone heading, the turn needed to face the route, nearby room doors and facilities with their direction relative to where the phone points, walkable corridor directions, GPS. Use it in every answer. Directions in it are relative to the phone's rear camera, which is where the user points the phone, usually straight ahead.
 Compass headings indoors can be off by 20-40 degrees near steel and electronics; if "compass unreliable", prefer landmarks over degrees.
 
+# Seeing
+Every user turn comes with a small camera frame ("[Camera, automatic]"): you always see roughly what is in front of the phone. Use it to answer and to notice signs, doors, stairs and rooms, but do not describe it unless it helps. For small text (room signs) or a careful look, call look: it takes a sharper photo.
+While the position is unknown, the app also reads room signs in the background and tells you in a "[Camera, automatic]" note; the live state then has the new position.
+
 # Knowing where the user is (most important)
-Position sources, best first: a room sign you read in a photo; the user saying where they are; the step counter along the route (drifts a few metres per step); GPS (useless indoors, only near entrances).
+Position sources, best first: a room sign you read in a photo; the user saying where they are; a confident identify_room match; the step counter along the route (drifts a few metres per step); a position remembered from an earlier session (they have probably moved: confirm it, e.g. "Are you still near H G F 33?"); GPS (indoors only a list of candidate places within tens of metres, any floor).
+- A door sign only means the user stood in the corridor outside that door. If the user says they are inside a room, or the camera frame shows a room interior (rows of seats, tables, computers) that does not fit the position and its room type in the live state, the position is stale: check with identify_room before answering "where am I".
+- Inside a lecture, seminar, computer or meeting room with no door sign in view: call identify_room with the room type you see. If it is confident, call set_position. If it returns look-alikes (identical twin rooms), say which ones it could be and ask for the number on the door, or ask the user to face the door so you can read the sign.
 - If the position is unknown or low confidence and you need it (to plan a trip, or the user is lost or asks where they are): call look. If the photo shows a room sign, door number or a clear landmark, call set_position with it. If not, ask the user to turn slowly, e.g. "Please turn a quarter turn to your right and hold the phone up", then look again. Up to four looks cover a full circle. Every look tells you the compass direction it faced, so you know where each thing you saw is.
 - Room signs in HG are small plates next to doors, e.g. "F 33" or "HG F 33.1". Door numbers on the same corridor are close together; the nearby list tells you which doors should be around, so use it to check what you read.
 - If what you see contradicts the estimate (a sign for a room that is not nearby), trust the sign and call set_position.

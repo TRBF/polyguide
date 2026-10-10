@@ -45,6 +45,33 @@ export function CameraBackdrop({ enabled }: { enabled: boolean }) {
   );
 }
 
+/** Small live view of what the voice assistant can see, on the trip screen. Shows nothing until the camera runs. */
+export function CameraPeek() {
+  const video = useRef<HTMLVideoElement | null>(null);
+  const [live, setLive] = useState(false);
+  useEffect(() => {
+    const attach = () => {
+      const stream = getCameraStream();
+      const el = video.current;
+      if (!el) return;
+      if (stream && el.srcObject !== stream) {
+        el.srcObject = stream;
+        void el.play().catch(() => undefined);
+      }
+      setLive(Boolean(stream));
+    };
+    attach();
+    const timer = window.setInterval(attach, 700);
+    return () => window.clearInterval(timer);
+  }, []);
+  return (
+    <figure className="camera-peek" hidden={!live} aria-hidden="true">
+      <video ref={video} muted playsInline autoPlay />
+      <figcaption>Assistant sees</figcaption>
+    </figure>
+  );
+}
+
 /** Map + step list in a sheet over the screen; the only place that scrolls. */
 export function RouteSheet({ route, levelId, onLevel, onClose, activeStepIndex }: { route: Route; levelId: string; onLevel: (levelId: string) => void; onClose: () => void; activeStepIndex?: number }) {
   const closeRef = useRef<HTMLButtonElement | null>(null);
