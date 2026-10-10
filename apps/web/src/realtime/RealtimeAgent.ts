@@ -90,6 +90,8 @@ export class RealtimeAgent {
         audio.srcObject = e.streams[0];
         void audio.play().catch(() => undefined);
       };
+      // Connected without a tap (reload, setting turned on): browsers may block playback until the next one.
+      for (const ev of ['pointerdown', 'touchend', 'keydown'] as const) window.addEventListener(ev, this.unlockAudio, { passive: true });
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'failed' || pc.connectionState === 'closed') this.fail('The voice connection dropped.');
       };
@@ -118,8 +120,13 @@ export class RealtimeAgent {
     }
   }
 
+  private unlockAudio = () => {
+    if (this.audio?.srcObject && this.audio.paused) void this.audio.play().catch(() => undefined);
+  };
+
   close() {
     this.closed = true;
+    for (const ev of ['pointerdown', 'touchend', 'keydown'] as const) window.removeEventListener(ev, this.unlockAudio);
     this.queue = [];
     this.responseActive = false;
     this.dc?.close();
