@@ -4,7 +4,7 @@
   "description": "Accessible indoor navigation at ETH Zürich.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f2f5f2",
-  "theme_color": "#075e67",
+  "background_color": "#F2F3F1",
+  "theme_color": "#215CAF",
   "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
 }

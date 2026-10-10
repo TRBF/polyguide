@@ -20,16 +20,6 @@ import './styles.css';
 type Route = Extract<RouteResult, { ok: true }>;
 type Screen = 'needs' | 'permissions' | 'where' | 'destination' | 'preview' | 'navigate' | 'arrived' | 'settings';
 const safetyNotice = 'This app supplements your cane or guide dog. It does not detect obstacles.';
-const stepNames: Record<Screen, string> = {
-  needs: 'Your needs',
-  permissions: 'Device permissions',
-  where: 'Where are you?',
-  destination: 'Where to?',
-  preview: 'Route preview',
-  navigate: 'Navigate',
-  arrived: 'Arrived',
-  settings: 'Settings',
-};
 const entrySpeech: Record<Screen, string> = {
   needs: `Welcome to PolyGuide. ${safetyNotice} Choose your access needs. Say help for options.`,
   permissions: 'Device permissions. Enable camera, motion, microphone and screen wake, or continue using touch and typed commands.',
@@ -55,6 +45,20 @@ function sameName(place: Place, query: string): boolean {
     const n = compact(name);
     return n === q || (n.startsWith('HG') && n.slice(2) === q);
   });
+}
+
+/** A turn arrow for when no compass heading is available (the arrow then shows the maneuver, not the bearing). */
+function maneuverGlyph(maneuver: string | undefined): string {
+  switch (maneuver) {
+    case 'left': case 'sharp_left': return '←';
+    case 'right': case 'sharp_right': return '→';
+    case 'slight_left': return '↖';
+    case 'slight_right': return '↗';
+    case 'u_turn': return '↶';
+    case 'take_elevator': case 'take_stairs_up': case 'take_stairs_down': case 'take_ramp_up': case 'take_ramp_down': case 'take_escalator': return '↕';
+    case 'arrive': return '●';
+    default: return '↑';
+  }
 }
 
 function listPlaceNames(places: Place[]): string {
@@ -692,10 +696,10 @@ export function App() {
   return (
     <div className={`app-shell${preferences.settings.voiceFirst ? ' app-voice-first' : ''}${profile.needs.includes('lowVision') ? ' app-low-vision' : ''}`}>
       <header className="app-header">
-        <a className="brand" href="#top" onClick={(event) => event.preventDefault()} aria-label="PolyGuide home">
+        <p className="brand">
           <span className="brand-mark" aria-hidden="true">P</span>
-          <span><strong>PolyGuide</strong><small>ETH Zürich · HG</small></span>
-        </a>
+          <span><strong>PolyGuide</strong><small>ETH Zürich main building</small></span>
+        </p>
         <div className="header-actions">
           <button type="button" className="button button-quiet" onClick={() => announce('You can say next, back, repeat, stop, help, where am I, what is ahead, take me to a room, or I am at a room.')}>Help</button>
           <button type="button" className="button button-quiet" onClick={openSettings}>Settings</button>
@@ -703,7 +707,6 @@ export function App() {
       </header>
 
       <main id="top" className="main-content">
-        <div className="screen-kicker">{stepNames[screen]}</div>
         {message && <p className="global-message" role="status" aria-live="polite">{message}</p>}
 
         {screen === 'needs' && (
@@ -829,13 +832,13 @@ export function App() {
 
         {screen === 'preview' && route && (
           <section className="screen-panel screen-panel-wide" aria-labelledby="preview-title">
-            <h1 id="preview-title">Route preview</h1>
-            <p className="lead">From <strong>{route.from.name}</strong> to <strong>{route.to.name}</strong></p>
-            <div className="route-stats">
-              <div><span>Distance</span><strong>{Math.round(route.totalDistanceM)} m</strong></div>
-              <div><span>Estimated time</span><strong>{Math.max(1, Math.round(route.totalDurationS / 60))} min</strong></div>
-              <div><span>Floors</span><strong>{route.levels.map((level) => level.split('.').at(-1)).join(' → ')}</strong></div>
-            </div>
+            <h1 id="preview-title">To {route.to.label ?? route.to.name}</h1>
+            <p className="lead">From {route.from.name}{route.to.label ? `, to room ${route.to.name}` : ''}.</p>
+            <dl className="route-stats">
+              <div><dt>Distance</dt><dd>{Math.round(route.totalDistanceM)} m</dd></div>
+              <div><dt>Time</dt><dd>{Math.max(1, Math.round(route.totalDurationS / 60))} min</dd></div>
+              <div><dt>Floors</dt><dd>{route.levels.map((level) => level.split('.').at(-1)).join(' → ')}</dd></div>
+            </dl>
             <div className="guarantee-list" aria-label="Route profile guarantees">
               {route.profileSummary.map((summary) => <span className="guarantee-chip" key={summary}>{summary}</span>)}
               {route.warnings.map((warning) => <p className="warning-line" key={warning}>{warning}</p>)}
@@ -858,7 +861,7 @@ export function App() {
                 <div><strong>{step.text}</strong><small>{step.distanceM ? `${Math.round(step.distanceM)} m · ` : ''}Floor {step.levelId.split('.').at(-1)}{step.toLevelId ? ` to floor ${step.toLevelId.split('.').at(-1)}` : ''}</small></div>
               </li>)}</ol>
             </section>
-            <div className="screen-actions split-actions">
+            <div className="screen-actions split-actions sticky-actions">
               <button className="button button-secondary" type="button" onClick={moveBack}>Back</button>
               <button className="button button-primary" type="button" onClick={beginNavigation}>Start navigation</button>
             </div>
@@ -868,25 +871,29 @@ export function App() {
         {screen === 'navigate' && route && (
           <section className="screen-panel navigate-panel" aria-labelledby="navigate-title">
             <div className="navigate-heading-row">
-              <div><h1 id="navigate-title">Navigate to {route.to.name}</h1><p className="eyebrow">Step {Math.min(guidance.stepIndex + 1, route.steps.length)} of {route.steps.length}</p></div>
-              <button className="button button-quiet" type="button" onClick={openSettings}>Settings</button>
+              <h1 id="navigate-title">To {route.to.label ?? route.to.name}</h1>
+              <p className="nav-progress">Step {Math.min(guidance.stepIndex + 1, route.steps.length)} of {route.steps.length}</p>
             </div>
-            <div className="compass-card">
-              <div className="compass-arrow-wrap">
-                <span className="compass-arrow" aria-hidden="true" style={{ transform: `rotate(${guidance.headingDeltaDeg ?? 0}deg)` }}>↑</span>
+            <ol className="step-track" aria-hidden="true">
+              {route.steps.map((step) => <li key={step.index} className={step.index < guidance.stepIndex ? 'done' : step.index === guidance.stepIndex ? 'current' : ''} />)}
+            </ol>
+            <div className="sign-panel">
+              <span className="sign-arrow" aria-hidden="true" style={guidance.compassReliable && guidance.headingDeltaDeg != null ? { transform: `rotate(${guidance.headingDeltaDeg}deg)` } : undefined}>
+                {guidance.compassReliable && guidance.headingDeltaDeg != null ? '↑' : maneuverGlyph(guidance.currentStep?.maneuver)}
+              </span>
+              <div className="sign-copy">
+                <p className="current-instruction">{guidance.currentStep?.text ?? 'Follow the next route step.'}</p>
+                {guidance.currentStep && guidance.currentStep.distanceM > 0 && (
+                  <p className="sign-distance">{Math.round(guidance.remainingStepM)} m left on this step</p>
+                )}
               </div>
-              <p className="compass-status">{guidance.compassReliable ? 'Heading available' : 'Compass unreliable — use the spoken or written direction cue.'}</p>
             </div>
-            <div className="instruction-card">
-              <p className="eyebrow">Current instruction</p>
-              <p className="current-instruction">{guidance.currentStep?.text ?? 'Follow the next route step.'}</p>
-              <div className="progress-row">
-                <span>{Math.round(guidance.remainingStepM)} m remaining on this step</span>
-                <span>{Math.round(guidance.remainingTotalM)} m total</span>
-              </div>
-              <progress aria-label="Current step progress" max={Math.max(1, guidance.currentStep?.distanceM ?? 1)} value={Math.max(0, (guidance.currentStep?.distanceM ?? 0) - guidance.remainingStepM)} />
-              {guidance.nextStep && <p className="next-instruction"><strong>Next:</strong> {guidance.nextStep.text}</p>}
+            <progress aria-label="Current step progress" max={Math.max(1, guidance.currentStep?.distanceM ?? 1)} value={Math.max(0, (guidance.currentStep?.distanceM ?? 0) - guidance.remainingStepM)} />
+            <div className="progress-row">
+              <span>{Math.round(guidance.remainingTotalM)} m to destination</span>
+              <span>{guidance.compassReliable ? 'Arrow follows your phone’s direction' : 'No compass. Arrow shows the turn'}</span>
             </div>
+            {guidance.nextStep && <p className="next-instruction">Then: {guidance.nextStep.text}</p>}
             <div className="navigation-controls" aria-label="Navigation controls">
               <button className="button button-nav" type="button" onClick={() => guidance.repeat()}>Repeat</button>
               <button className="button button-nav button-primary" type="button" onClick={() => guidance.next()}>{guidance.currentStep?.maneuver === 'take_elevator' ? 'Done with elevator' : 'Next'}</button>
