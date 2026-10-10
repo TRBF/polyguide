@@ -47,7 +47,7 @@ export interface BuildReport {
   edgeKindsPerLevel: Record<string, Partial<Record<EdgeKind, number>>>;
   transitions: { kept: number; foreign: number; endpointSnappedToSegment: number; failed: { oid: number; kind: EdgeKind; reason: string }[] };
   droppedEdges: Record<string, number>;
-  places: { rooms: number; entrances: number; pois: number; roomsWithoutNode: number; roomsSnappedToDoor: number };
+  places: { rooms: number; entrances: number; pois: number; roomsWithoutNode: number; roomsSnappedToDoor: number; roomsNotStepFree: number };
   lengthScaling: { scaled: number; unscaled: number; suspicious: number };
 }
 
@@ -172,7 +172,7 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
     edgeKindsPerLevel: {},
     transitions: { kept: 0, foreign: 0, endpointSnappedToSegment: 0, failed: [] },
     droppedEdges: {},
-    places: { rooms: 0, entrances: 0, pois: 0, roomsWithoutNode: 0, roomsSnappedToDoor: 0 },
+    places: { rooms: 0, entrances: 0, pois: 0, roomsWithoutNode: 0, roomsSnappedToDoor: 0, roomsNotStepFree: 0 },
     lengthScaling: { scaled: 0, unscaled: 0, suspicious: 0 },
   };
   const drop = (why: string) => (report.droppedEdges[why] = (report.droppedEdges[why] ?? 0) + 1);
@@ -496,7 +496,8 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
   const nodesByLevel = new Map<string, GraphNode[]>();
   for (const nd of outNodes) if (nd.levelId) (nodesByLevel.get(nd.levelId) ?? nodesByLevel.set(nd.levelId, []).get(nd.levelId)!).push(nd);
 
-  const places = buildPlaces(input, proj, nodesByLevel, levelOrder, report);
+  const stepFree = stepFreeMainComponent(outNodes, outEdges);
+  const places = buildPlaces(input, proj, nodesByLevel, levelOrder, stepFree, report);
 
   const graph: GraphJson = {
     builtAt: new Date().toISOString(),
@@ -509,6 +510,17 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
     levels,
   };
   return { graph, report };
+}
+
+/** Node ids in the largest component reachable without stairs/escalators/steep edges. */
+function stepFreeMainComponent(nodes: GraphNode[], edges: GraphEdge[]): Set<string> {
+  const index = new Map(nodes.map((n, i) => [n.id, i]));
+  const uf = new UnionFind(nodes.length);
+  for (const e of edges) if (e.kind !== 'stairs' && e.kind !== 'escalator' && e.kind !== 'steep') uf.union(index.get(e.from)!, index.get(e.to)!);
+  const size = new Map<number, number>();
+  for (let i = 0; i < nodes.length; i++) size.set(uf.find(i), (size.get(uf.find(i)) ?? 0) + 1);
+  const root = [...size.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  return new Set(nodes.filter((_, i) => uf.find(i) === root).map((n) => n.id));
 }
 
 /* ───────────── Places (SPEC §4.1 step 9) ───────────── */
@@ -552,6 +564,7 @@ function buildPlaces(
   proj: Projection,
   nodesByLevel: Map<string, GraphNode[]>,
   levelOrder: Map<string, number>,
+  stepFree: Set<string>,
   report: BuildReport,
 ): Place[] {
   const places: Place[] = [];
@@ -576,10 +589,12 @@ function buildPlaces(
     const outer = rings.reduce((a, b) => (b.length > a.length ? b : a));
     const c = polygonCentroid(outer);
 
-    // Prefer nodes within DOOR_RADIUS_M of the polygon boundary (≈ the door), closest to the centroid.
+    // Prefer nodes within DOOR_RADIUS_M of the polygon boundary (≈ the door), then step-free reachable ones
+    // (stepped lecture halls have interior nodes reachable only by stairs), then closest to the centroid.
     const cands = nodesByLevel.get(levelId) ?? [];
     let door: GraphNode | undefined;
     let doorD = Infinity;
+    const score = (nd: GraphNode) => dist2D(nd, c) + (stepFree.has(nd.id) ? 0 : 1e6);
     const xs = outer.map((q) => q.x);
     const ys = outer.map((q) => q.y);
     const [minX, maxX, minY, maxY] = [Math.min(...xs) - DOOR_RADIUS_M, Math.max(...xs) + DOOR_RADIUS_M, Math.min(...ys) - DOOR_RADIUS_M, Math.max(...ys) + DOOR_RADIUS_M];
@@ -589,7 +604,7 @@ function buildPlaces(
       for (const ring of rings)
         for (let i = 0; i + 1 < ring.length; i++) bd = Math.min(bd, pointSegment(nd, ring[i], ring[i + 1]).d);
       if (bd <= DOOR_RADIUS_M) {
-        const d = dist2D(nd, c);
+        const d = score(nd);
         if (d < doorD) {
           door = nd;
           doorD = d;
@@ -602,6 +617,7 @@ function buildPlaces(
       continue;
     }
     if (door) report.places.roomsSnappedToDoor++;
+    if (!stepFree.has(node.id)) report.places.roomsNotStepFree++;
     const label = FRIENDLY[name];
     const place: Place = {
       id: `pl_${slug(name)}`,

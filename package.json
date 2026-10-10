@@ -12,6 +12,7 @@
     "dev:web": "pnpm --filter @polyguide/web dev",
     "fetch:eth": "pnpm --filter @polyguide/scripts fetch:eth",
     "build:graph": "pnpm --filter @polyguide/scripts build:graph",
+    "route": "pnpm --filter @polyguide/scripts route",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test"
   },

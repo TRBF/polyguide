@@ -6,6 +6,7 @@
   "scripts": {
     "fetch:eth": "tsx fetch-eth.ts",
     "build:graph": "tsx build-graph.ts",
+    "route": "tsx route-cli.ts",
     "typecheck": "tsc -p ."
   },
   "dependencies": {
