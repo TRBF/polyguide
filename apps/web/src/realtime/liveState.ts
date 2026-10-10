@@ -1,0 +1,201 @@
+/**
+ * The "[Live state]" message the realtime agent gets before every turn: everything the app knows about where
+ * the user is and which way they face, in plain words. Pure functions so they can be unit-tested.
+ */
+import type { Place, PositionInfo, RouteStep } from '@polyguide/shared';
+
+/* ───────────── Geometry ───────────── */
+
+const M_PER_DEG_LAT = 110540;
+const M_PER_DEG_LON = (lat: number) => 111320 * Math.cos((lat * Math.PI) / 180);
+
+/** Point `distM` along a [lon, lat] polyline (clamped to its ends). */
+export function pointAlong(polyline: [number, number][], distM: number): { lat: number; lon: number } | null {
+  if (!polyline.length) return null;
+  let left = Math.max(0, distM);
+  for (let i = 1; i < polyline.length; i++) {
+    const [lon0, lat0] = polyline[i - 1];
+    const [lon1, lat1] = polyline[i];
+    const kx = M_PER_DEG_LON(lat0);
+    const seg = Math.hypot((lon1 - lon0) * kx, (lat1 - lat0) * M_PER_DEG_LAT);
+    if (seg >= left && seg > 0) {
+      const t = left / seg;
+      return { lon: lon0 + (lon1 - lon0) * t, lat: lat0 + (lat1 - lat0) * t };
+    }
+    left -= seg;
+  }
+  const [lon, lat] = polyline[polyline.length - 1];
+  return { lat, lon };
+}
+
+/** Compass bearing of the polyline segment `distM` along it (the way the route goes from there). */
+export function bearingAt(polyline: [number, number][], distM: number): number | null {
+  let left = Math.max(0, distM);
+  let last: number | null = null;
+  for (let i = 1; i < polyline.length; i++) {
+    const [lon0, lat0] = polyline[i - 1];
+    const [lon1, lat1] = polyline[i];
+    const dx = (lon1 - lon0) * M_PER_DEG_LON(lat0);
+    const dy = (lat1 - lat0) * M_PER_DEG_LAT;
+    const seg = Math.hypot(dx, dy);
+    if (seg < 0.3) continue;
+    last = norm360((Math.atan2(dx, dy) * 180) / Math.PI);
+    // Within a metre of a bend, the next segment is the one to face.
+    if (seg - left > 1) return last;
+    left -= seg;
+  }
+  return last;
+}
+
+export const norm360 = (d: number) => ((d % 360) + 360) % 360;
+/** Signed turn from heading to bearing in (-180, 180]; positive = to the right. */
+export const turnTo = (bearing: number, heading: number) => {
+  const d = norm360(bearing - heading + 180) - 180;
+  return d === -180 ? 180 : d;
+};
+
+const COMPASS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
+export const compassName = (deg: number) => COMPASS[Math.round(norm360(deg) / 45) % 8];
+
+/** "ahead", "slightly right (20°)", "right (85°)", "behind-left (140°)", "behind". */
+export function relDirection(bearing: number, heading: number): string {
+  const d = turnTo(bearing, heading);
+  const a = Math.abs(Math.round(d));
+  const side = d > 0 ? 'right' : 'left';
+  if (a <= 12) return 'ahead';
+  if (a <= 35) return `slightly ${side} (${a}°)`;
+  if (a <= 120) return `${side} (${a}°)`;
+  if (a <= 165) return `behind-${side} (${a}°)`;
+  return 'behind';
+}
+
+/** What the user must do to face a direction `turn` degrees away (positive = right), in words first. */
+export function turnPhrase(turn: number): string {
+  const a = Math.abs(Math.round(turn));
+  const side = turn > 0 ? 'right' : 'left';
+  if (a <= 15) return 'already facing it, go straight ahead';
+  if (a <= 35) return `turn slightly ${side} (${a}° to the ${side})`;
+  if (a <= 120) return `turn ${side} (${a}° to the ${side})`;
+  if (a <= 160) return `turn around over your ${side} shoulder (${a}° to the ${side})`;
+  return `turn around (${a}°)`;
+}
+
+/* ───────────── Position estimate ───────────── */
+
+export interface Fix {
+  place: Place;
+  /** How we know: a sign the camera read, the user said so, or the end of a finished route. */
+  source: 'sign' | 'user' | 'route';
+  at: number;
+  /** Rough distance from the place when the fix was taken. */
+  distanceM?: number;
+}
+
+export interface Estimate {
+  /** What /api/position is asked about. */
+  request: { placeId?: string; lat?: number; lon?: number; levelId?: string };
+  /** One line for the model. */
+  text: string;
+  confidence: 'high' | 'medium' | 'low' | 'none';
+}
+
+/** A sign or the user's word beats dead reckoning for this long. */
+export const FIX_FRESH_MS = 30_000;
+
+export function estimatePosition(args: {
+  now: number;
+  fix: Fix | null;
+  navigating: boolean;
+  step: RouteStep | null;
+  stepIndex: number;
+  progressM: number;
+}): Estimate {
+  const { now, fix, navigating, step, progressM } = args;
+  const age = fix ? Math.round((now - fix.at) / 1000) : 0;
+  const how = (f: Fix) => (f.source === 'sign' ? `room sign read ${age} s ago` : f.source === 'user' ? `the user said so ${age} s ago` : `end of the last route, ${age} s ago`);
+  const at = (f: Fix) => `${f.distanceM && f.distanceM > 2 ? `about ${Math.round(f.distanceM)} m from` : 'at'} ${f.place.name}${f.place.label && f.place.kind === 'room' ? ` (${f.place.label})` : ''}`;
+
+  if (navigating && step && !(fix && now - fix.at < FIX_FRESH_MS)) {
+    const vertical = step.bearingDeg == null || (step.toLevelId != null && step.toLevelId !== step.levelId);
+    const p = vertical ? pointAlong(step.polyline, 0) : pointAlong(step.polyline, progressM);
+    if (p) {
+      const drift = Math.round(2 + 0.1 * progressM);
+      const text = vertical
+        ? `at the ${step.maneuver.replace(/_/g, ' ')} of step ${args.stepIndex + 1} (dead reckoning; changes floor, so confirm when they are off it)`
+        : `about ${Math.round(progressM)} m into step ${args.stepIndex + 1} (dead reckoning from the step counter, ±${drift} m)`;
+      const last = fix ? `; last fix: ${at(fix)}, ${how(fix)}` : '';
+      return { request: { lat: p.lat, lon: p.lon, levelId: step.levelId }, text: `${text}${last}`, confidence: progressM < 25 ? 'medium' : 'low' };
+    }
+  }
+  if (fix) {
+    const confidence = fix.source === 'route' || age < 120 ? 'high' : age < 600 ? 'medium' : 'low';
+    return { request: { placeId: fix.place.id }, text: `${at(fix)}, floor ${floorOf(fix.place.levelId)} (${how(fix)})`, confidence };
+  }
+  return { request: {}, text: 'UNKNOWN: no sign read and the user has not said where they are', confidence: 'none' };
+}
+
+const floorOf = (levelId: string) => levelId.split('.').at(-1) ?? levelId;
+
+/* ───────────── The message ───────────── */
+
+export interface LiveStateInput {
+  now: number;
+  screen: string;
+  trip: { from?: string; to?: string; confirming: boolean; options?: string[] };
+  navigation?: {
+    stepIndex: number;
+    stepCount: number;
+    instruction: string;
+    nextInstruction?: string;
+    remainingStepM: number;
+    remainingTotalM: number;
+    /** Compass bearing of the route from here; null on stairs / elevators. */
+    bearingDeg: number | null;
+    vertical: boolean;
+  };
+  estimate: Estimate;
+  info: PositionInfo | null;
+  heading: { deg: number | null; reliable: boolean };
+  moving: boolean;
+  gps: { lat: number; lon: number; accuracyM: number; ageS: number } | null;
+  needs: string[];
+  lastSeen?: { summary: string; ageS: number };
+}
+
+export function formatLiveState(s: LiveStateInput): string {
+  const h = s.heading.deg;
+  const lines: string[] = ['[Live state] (sent by the app, not said by the user)'];
+
+  const trip = s.trip.to ? `trip ${s.trip.from ? `from ${s.trip.from} ` : ''}to ${s.trip.to}${s.trip.confirming ? ', waiting for the user to confirm' : ''}` : 'no destination yet';
+  lines.push(`Screen: ${s.screen}; ${trip}.${s.trip.options?.length ? ` Options read out: ${s.trip.options.map((o, i) => `${i + 1}. ${o}`).join('; ')}.` : ''}`);
+  if (s.needs.length) lines.push(`Needs: ${s.needs.join(', ')}.`);
+
+  const n = s.navigation;
+  if (n) {
+    lines.push(`Navigating: step ${n.stepIndex + 1} of ${n.stepCount}: "${n.instruction}". ${n.vertical ? '' : `${Math.round(n.remainingStepM)} m left on this step, `}${Math.round(n.remainingTotalM)} m to the destination.${n.nextInstruction ? ` Then: "${n.nextInstruction}".` : ''}`);
+  }
+
+  lines.push(`Position: ${s.estimate.text}. Confidence: ${s.estimate.confidence}.`);
+  if (s.info?.ok) lines.push(`Floor ${s.info.floor}.`);
+
+  if (h == null) lines.push('Heading: unknown (no compass). Use landmarks and the camera, not degrees.');
+  else {
+    lines.push(`Phone points ${Math.round(h)}° (${compassName(h)})${s.heading.reliable ? '' : ', compass unreliable right now'}. User is ${s.moving ? 'moving' : 'standing still'}.`);
+    if (n && n.bearingDeg != null) lines.push(`To face the route: ${turnPhrase(turnTo(n.bearingDeg, h))}.`);
+  }
+
+  if (s.info?.ok) {
+    const rel = (b: number) => (h == null ? `${compassName(b)}` : relDirection(b, h));
+    if (s.info.nearby.length) {
+      lines.push(`Nearby (nearest first; direction relative to where the phone points): ${s.info.nearby.map((p) => `${p.label && p.kind !== 'room' ? p.label : p.name}${p.label && p.kind === 'room' ? ` (${p.label})` : ''} ${Math.round(p.distM)} m ${rel(p.bearingDeg)}`).join('; ')}.`);
+    }
+    if (s.info.paths.length) {
+      lines.push(`Walkable from here: ${s.info.paths.map((p) => `${p.kind === 'hallway' ? 'corridor' : p.kind} ${rel(p.bearingDeg)}`).join('; ')}.`);
+    }
+    if (s.info.gpsEntrance) lines.push(`GPS puts the user ${s.info.gpsEntrance.distM} m from ${s.info.gpsEntrance.name} (outdoors).`);
+  }
+  if (s.gps) lines.push(`GPS: ±${Math.round(s.gps.accuracyM)} m, ${s.gps.ageS} s old${s.gps.accuracyM > 25 ? ' (too coarse indoors; ignore for rooms)' : ''}.`);
+  else lines.push('GPS: none.');
+  if (s.lastSeen && s.lastSeen.ageS < 60) lines.push(`Camera ${s.lastSeen.ageS} s ago: ${s.lastSeen.summary}`);
+  return lines.join('\n');
+}

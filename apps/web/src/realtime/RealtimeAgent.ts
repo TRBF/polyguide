@@ -1,0 +1,320 @@
+/**
+ * Speech-to-speech voice agent over WebRTC (OpenAI Realtime). The server mints a client secret with the
+ * instructions and tools; this class owns the call, the mic, the model's audio and the event channel.
+ *
+ * Turn flow: the server VAD commits the user's speech but does not reply on its own (create_response off).
+ * On commit we add a fresh "[Live state]" system message (and drop the previous one), then ask for the reply,
+ * so every answer sees the current position, heading and route. Tool calls run in the app; their results go
+ * back as function_call_output (plus a camera photo for `look`) and the model continues.
+ *
+ * App announcements (step instructions) are spoken by the same voice, word for word, so the user hears one
+ * voice and the model knows what the app just said. One response at a time: the rest wait in a queue.
+ */
+import { API, type RealtimeSessionResponse } from '@polyguide/shared';
+
+export type AgentStatus = 'off' | 'connecting' | 'listening' | 'hearing' | 'thinking' | 'speaking' | 'error';
+
+export interface ToolResult {
+  /** JSON-able result for the model. */
+  output: unknown;
+  /** Extra conversation content after the output, e.g. the photo for `look`. */
+  image?: { jpegBase64: string; caption: string };
+}
+
+export interface RealtimeAgentOptions {
+  language: 'en' | 'de';
+  /** The live state, built fresh at send time. */
+  liveState: () => Promise<string> | string;
+  runTool: (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
+  onStatus?: (status: AgentStatus) => void;
+  onUserTranscript?: (text: string) => void;
+  onAssistantTranscript?: (text: string) => void;
+  onError?: (message: string) => void;
+}
+
+type Pending = { kind: 'reply' } | { kind: 'announce'; text: string };
+
+interface FunctionCallItem {
+  type: 'function_call';
+  call_id: string;
+  name: string;
+  arguments: string;
+}
+
+const CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
+
+export class RealtimeAgent {
+  private pc: RTCPeerConnection | null = null;
+  private dc: RTCDataChannel | null = null;
+  private mic: MediaStream | null = null;
+  private audio: HTMLAudioElement | null = null;
+  private status: AgentStatus = 'off';
+  private responseActive = false;
+  private queue: Pending[] = [];
+  private lastStateId: string | null = null;
+  private seq = 0;
+  private closed = false;
+  private muted = false;
+  private announcing: string | null = null;
+
+  constructor(private opts: RealtimeAgentOptions) {}
+
+  get connected() {
+    return this.dc?.readyState === 'open';
+  }
+
+  /**
+   * Call from a tap: the mic prompt and audio playback need the user gesture. Resolves once the event channel
+   * is open; throws if anything fails (the caller falls back to the old voice pipeline).
+   */
+  async connect(): Promise<void> {
+    this.closed = false;
+    this.setStatus('connecting');
+    // Inside the gesture: audio element first, so iOS lets it play later.
+    const audio = document.createElement('audio');
+    audio.autoplay = true;
+    audio.setAttribute('playsinline', '');
+    this.audio = audio;
+    const micPromise = navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    const sessionPromise = fetch(API.realtimeSession, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ language: this.opts.language }) })
+      .then((r) => r.json() as Promise<RealtimeSessionResponse>);
+    try {
+      const [mic, session] = await Promise.all([micPromise, sessionPromise]);
+      this.mic = mic;
+      if (!session.ok) throw new Error(session.message);
+      if (this.closed) throw new Error('closed');
+
+      const pc = new RTCPeerConnection();
+      this.pc = pc;
+      pc.ontrack = (e) => {
+        audio.srcObject = e.streams[0];
+        void audio.play().catch(() => undefined);
+      };
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') this.fail('The voice connection dropped.');
+      };
+      for (const track of mic.getAudioTracks()) pc.addTrack(track, mic);
+      const dc = pc.createDataChannel('oai-events');
+      this.dc = dc;
+      dc.onmessage = (m) => this.onEvent(JSON.parse(String(m.data)));
+      const opened = new Promise<void>((resolve, reject) => {
+        dc.onopen = () => resolve();
+        dc.onclose = () => (this.closed ? undefined : this.fail('The voice connection closed.'));
+        setTimeout(() => reject(new Error('The voice connection timed out.')), 12_000);
+      });
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      const res = await fetch(CALLS_URL, { method: 'POST', body: offer.sdp, headers: { Authorization: `Bearer ${session.clientSecret}`, 'Content-Type': 'application/sdp' } });
+      if (!res.ok) throw new Error(`Voice call refused (${res.status}).`);
+      await pc.setRemoteDescription({ type: 'answer', sdp: await res.text() });
+      await opened;
+      this.setMuted(this.muted);
+      this.setStatus('listening');
+    } catch (err) {
+      this.close();
+      this.setStatus('error');
+      throw err;
+    }
+  }
+
+  close() {
+    this.closed = true;
+    this.queue = [];
+    this.responseActive = false;
+    this.dc?.close();
+    this.pc?.close();
+    this.mic?.getTracks().forEach((t) => t.stop());
+    if (this.audio) this.audio.srcObject = null;
+    this.dc = null;
+    this.pc = null;
+    this.mic = null;
+    this.setStatus('off');
+  }
+
+  /** Pause listening (the mic track is silenced; the call stays up). */
+  setMuted(muted: boolean) {
+    this.muted = muted;
+    this.mic?.getAudioTracks().forEach((t) => (t.enabled = !muted));
+  }
+
+  /** Typed input: same as speech, without the audio. */
+  sendText(text: string) {
+    if (!this.connected) return;
+    this.cancelSpeech();
+    this.send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } });
+    void this.reply();
+  }
+
+  /** Speak an app announcement word for word (queued behind the current reply). */
+  announce(text: string) {
+    if (!this.connected || !text.trim()) return;
+    this.request({ kind: 'announce', text });
+  }
+
+  /** Stop the model talking (e.g. the user tapped). */
+  cancelSpeech() {
+    if (!this.responseActive) return;
+    this.send({ type: 'response.cancel' });
+    this.send({ type: 'output_audio_buffer.clear' });
+  }
+
+  /* ───── Internals ───── */
+
+  private send(event: Record<string, unknown>) {
+    if (this.dc?.readyState === 'open') this.dc.send(JSON.stringify(event));
+  }
+
+  private setStatus(s: AgentStatus) {
+    if (this.status === s) return;
+    this.status = s;
+    this.opts.onStatus?.(s);
+  }
+
+  private fail(message: string) {
+    if (this.closed) return;
+    this.opts.onError?.(message);
+    this.close();
+    this.setStatus('error');
+  }
+
+  /** Add the live state (replacing the last one), then ask for the model's reply. */
+  private async reply() {
+    await this.pushState();
+    this.request({ kind: 'reply' });
+  }
+
+  private async pushState() {
+    let state: string;
+    try {
+      state = await this.opts.liveState();
+    } catch {
+      state = '[Live state] unavailable right now.';
+    }
+    const id = `live_${Date.now().toString(36)}_${++this.seq}`;
+    if (this.lastStateId) this.send({ type: 'conversation.item.delete', item_id: this.lastStateId });
+    this.send({ type: 'conversation.item.create', item: { id, type: 'message', role: 'system', content: [{ type: 'input_text', text: state }] } });
+    this.lastStateId = id;
+  }
+
+  private request(p: Pending) {
+    // A user turn replaces an announcement that has not started yet: they are talking now.
+    if (p.kind === 'reply') this.queue = this.queue.filter((q) => q.kind !== 'reply');
+    this.queue.push(p);
+    this.pump();
+  }
+
+  private pump() {
+    if (this.responseActive || !this.queue.length) return;
+    // Replies first; consecutive announcements are read as one.
+    const replyAt = this.queue.findIndex((q) => q.kind === 'reply');
+    let next: Pending;
+    if (replyAt >= 0) next = this.queue.splice(replyAt, 1)[0];
+    else {
+      const texts = this.queue.map((q) => (q.kind === 'announce' ? q.text : '')).filter(Boolean);
+      this.queue = [];
+      next = { kind: 'announce', text: texts.join(' ') };
+    }
+    this.responseActive = true;
+    this.setStatus('thinking');
+    if (next.kind === 'reply') this.send({ type: 'response.create' });
+    else {
+      // Out of band, with only the text as input: inside the conversation the model paraphrases instructions
+      // from context. The text joins the conversation once spoken (onResponseDone), so the agent knows it.
+      this.announcing = next.text;
+      this.send({
+        type: 'response.create',
+        response: {
+          conversation: 'none',
+          instructions: 'You are a screen reader. Read the given text aloud exactly as written, word for word, in a calm clear voice. Never add, drop or change a word.',
+          input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: next.text }] }],
+          tool_choice: 'none',
+          metadata: { kind: 'announce' },
+        },
+      });
+    }
+  }
+
+  private onEvent(e: { type: string; [k: string]: unknown }) {
+    switch (e.type) {
+      case 'input_audio_buffer.speech_started':
+        this.setStatus('hearing');
+        return;
+      case 'input_audio_buffer.committed':
+        void this.reply();
+        return;
+      case 'conversation.item.input_audio_transcription.completed': {
+        const t = String(e.transcript ?? '').trim();
+        if (t) this.opts.onUserTranscript?.(t);
+        return;
+      }
+      case 'output_audio_buffer.started':
+        this.setStatus('speaking');
+        return;
+      case 'output_audio_buffer.stopped':
+      case 'output_audio_buffer.cleared':
+        if (!this.responseActive) this.setStatus('listening');
+        return;
+      case 'response.output_audio_transcript.done': {
+        const t = String(e.transcript ?? '').trim();
+        if (t) this.opts.onAssistantTranscript?.(t);
+        return;
+      }
+      case 'response.done':
+        void this.onResponseDone(e.response as { status: string; output?: { type: string }[]; metadata?: { kind?: string } | null });
+        return;
+      case 'error': {
+        const err = e.error as { message?: string; code?: string } | undefined;
+        // Harmless races (deleting an item already gone, cancelling a finished response).
+        if (err?.code && /item_not_found|response_cancel_not_active|no_active_response/.test(err.code)) return;
+        console.warn('realtime error', err);
+        if (err?.code === 'conversation_already_has_active_response') {
+          this.responseActive = true;
+          return;
+        }
+        return;
+      }
+    }
+  }
+
+  private async onResponseDone(r: { status: string; output?: { type: string }[]; metadata?: { kind?: string } | null }) {
+    if (r.metadata?.kind === 'announce' && this.announcing) {
+      const text = this.announcing;
+      this.announcing = null;
+      if (r.status === 'completed') this.send({ type: 'conversation.item.create', item: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: `(app announcement) ${text}` }] } });
+    }
+    const calls = r.status === 'completed' && r.metadata?.kind !== 'announce' ? ((r.output ?? []).filter((o) => o.type === 'function_call') as FunctionCallItem[]) : [];
+    if (!calls.length) {
+      this.responseActive = false;
+      this.setStatus(this.status === 'speaking' ? 'speaking' : 'listening');
+      this.pump();
+      return;
+    }
+    // Keep the slot while tools run, so nothing else starts a response in between.
+    this.setStatus('thinking');
+    const images: ToolResult['image'][] = [];
+    for (const call of calls) {
+      let result: ToolResult;
+      try {
+        result = await this.opts.runTool(call.name, JSON.parse(call.arguments || '{}') as Record<string, unknown>);
+      } catch (err) {
+        result = { output: { ok: false, error: err instanceof Error ? err.message : 'The tool failed.' } };
+      }
+      if (this.closed) return;
+      this.send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(result.output) } });
+      if (result.image) images.push(result.image);
+    }
+    for (const img of images) {
+      this.send({
+        type: 'conversation.item.create',
+        item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: img!.caption }, { type: 'input_image', image_url: `data:image/jpeg;base64,${img!.jpegBase64}`, detail: 'high' }] },
+      });
+    }
+    // The tool output is new information: the model continues with a fresh live state. The slot stays held
+    // until then, so a queued announcement cannot slip in between the tool result and the model's answer.
+    await this.pushState();
+    if (this.closed) return;
+    this.responseActive = false;
+    this.request({ kind: 'reply' });
+  }
+}

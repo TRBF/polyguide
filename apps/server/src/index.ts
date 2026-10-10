@@ -8,6 +8,7 @@ import { loadGraph } from './graphStore';
 import { mockRoutes } from './mock';
 import { devRoutes } from './devCompare';
 import { apiRoutes } from './routes';
+import { positionRoutes } from './position';
 import { rateLimit } from './rateLimit';
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -25,6 +26,7 @@ if (USE_MOCK) {
 } else {
   loadGraph();
   app.route('/api', apiRoutes);
+  app.route('/api', positionRoutes);
   // /dev/compare calls ETH at runtime; keep it off unless explicitly enabled (the app may sit behind a public tunnel).
   if (process.env.ENABLE_DEV_ROUTES === '1') app.route('/api', devRoutes);
   // Paid OpenAI calls: a walking user triggers vision every few seconds at most, so these budgets
@@ -50,6 +52,12 @@ if (USE_MOCK) {
     perClient: Number(process.env.AGENT_RATE_PER_MIN ?? 40),
     global: Number(process.env.AGENT_RATE_GLOBAL_PER_MIN ?? 150),
     body: (s) => ({ ok: false, reason: 'rate_limited', message: `Too many requests. Try again in ${s} seconds.` }),
+  }));
+  // A realtime session is one conversation (several minutes); a few per user per minute covers reconnects.
+  app.use('/api/realtime/session', rateLimit({
+    perClient: Number(process.env.REALTIME_RATE_PER_MIN ?? 6),
+    global: Number(process.env.REALTIME_RATE_GLOBAL_PER_MIN ?? 30),
+    body: (s) => ({ ok: false, reason: 'rate_limited', message: `Too many voice sessions. Try again in ${s} seconds.` }),
   }));
   app.route('/api', aiRoutes);
 }
