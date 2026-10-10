@@ -467,6 +467,72 @@ export type UseGuidance = (
   options: GuidanceOptions,
 ) => GuidanceState & GuidanceActions;
 
+/* ───────────── Live position (POST /api/position). Additive. ───────────── */
+
+/** A point the client believes the user is at: a place, or a lat/lon on a level. */
+export interface PositionRequest {
+  placeId?: PlaceId;
+  lat?: number;
+  lon?: number;
+  levelId?: LevelId;
+  /** Outdoor GPS fix; only used to name a nearby entrance. */
+  gps?: { lat: number; lon: number; accuracyM: number };
+}
+
+export interface NearbyPlace {
+  placeId: PlaceId;
+  name: string;
+  label?: string;
+  kind: PlaceKind;
+  useType?: string;
+  distM: number;
+  /** Compass bearing from the user to the place (0 = north). The client turns it into left/right with the live heading. */
+  bearingDeg: number;
+}
+
+export type PositionInfo =
+  | {
+      ok: true;
+      levelId: LevelId;
+      floor: string;
+      /** Nearest corridor node and how far the estimate is from it. */
+      nodeId: NodeId;
+      snapM: number;
+      /** Room doors (their signs), facilities and entrances within ~25 m on this floor, nearest first. */
+      nearby: NearbyPlace[];
+      /** Walkable directions from the nearest corridor node, as compass bearings. */
+      paths: { bearingDeg: number; kind: EdgeKind; lengthM: number }[];
+      /** GPS within ~40 m of an entrance (outdoors only). */
+      gpsEntrance?: { name: string; distM: number };
+    }
+  | { ok: false; message: string };
+
+/* ───────────── Realtime voice agent (speech to speech). Additive. ───────────── */
+
+export type RealtimeSessionResponse =
+  | { ok: true; clientSecret: string; model: string; expiresAt: number }
+  | { ok: false; reason: 'disabled' | 'model_error' | 'rate_limited'; message: string };
+
+/** plan_trip: the model's place names resolved against the graph, so a room is never invented. */
+export interface ResolveTripRequest {
+  fromText?: string | null;
+  toText?: string | null;
+  /** Where the user is believed to be: the default start and the reference for "nearest". */
+  nearPlaceId?: PlaceId;
+  needs: Need[];
+}
+
+export interface ResolveTripResponse {
+  from?: Place;
+  to?: Place;
+  options?: Place[];
+  optionsFor?: 'from' | 'to';
+  /** A name that matched nothing. */
+  notFound?: string;
+  /** Exact confirmation sentence (same wording as /api/agent). */
+  say: string;
+}
+
 /* ───────────────────────────── Misc API ─────────────────────────── */
 
 export interface HealthResponse {
@@ -485,6 +551,9 @@ export const API = {
   vision: '/api/vision/check',
   intent: '/api/intent',
   agent: '/api/agent',
+  position: '/api/position',
+  realtimeSession: '/api/realtime/session',
+  realtimeResolve: '/api/realtime/resolve',
   devCompare: '/api/dev/compare',
 } as const;
 

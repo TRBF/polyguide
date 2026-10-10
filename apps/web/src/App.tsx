@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
+  API,
   type AgentResponse,
   type Intent,
   type IntentRequest,
   type Need,
   type Place,
+  type PositionInfo,
+  type ResolveTripResponse,
   type RouteResult,
   type VisionTrigger,
   useTypeFromText,
@@ -20,7 +23,13 @@ import { answerForScreen, parseAppCommand, parseCommand } from './voice/commands
 import { clearRecents, hasSavedPreferences, loadPreferences, recentPlaces, rememberPlace, savePreferences, type Preferences } from './storage';
 import { useGuidance } from './guidance';
 import { PATTERN_LEGEND, buzz, stepPattern } from './guidance/haptics';
+import { captureFrame } from './guidance/camera';
+import { isVerticalStep } from './guidance/tracker';
 import { requestSensorPermissions } from './sensorPermissions';
+import { RealtimeAgent, type AgentStatus, type ToolResult } from './realtime/RealtimeAgent';
+import { RealtimeDock } from './realtime/RealtimeDock';
+import { LiveSensors } from './realtime/liveSensors';
+import { bearingAt, compassName, estimatePosition, formatLiveState, type Fix } from './realtime/liveState';
 import './styles.css';
 
 type Route = Extract<RouteResult, { ok: true }>;
@@ -53,6 +62,7 @@ const ASK_TRIP = 'Where are you, and where do you want to go? For example: I am 
 /** How many choices are read out, shown and numbered: the same everywhere, so "number 3" means one thing. */
 const MAX_OPTIONS = 4;
 const WELCOME = `Welcome to PolyGuide. ${safetyNotice} ${ASK_TRIP} If you are blind or use a wheelchair, tell me.`;
+const LOOK_HINT = 'If you do not know where you are, hold the phone up in front of you and I will look around.';
 
 /** "79 metres, about 2 minutes. No stairs. Uses 1 elevator." */
 function shortSummary(route: Route): string {
@@ -227,6 +237,17 @@ export function App() {
   }, [screen]);
   const hapticsRef = useRef(preferences.settings.haptics);
   hapticsRef.current = preferences.settings.haptics;
+  /** Where the user really is, from a sign, their word, or the end of a route. Drives the agent's live state. */
+  const [fix, setFix] = useState<Fix | null>(null);
+  /** The realtime voice agent (speech to speech); null = the older recognizer + /api/agent pipeline. */
+  const rtRef = useRef<RealtimeAgent | null>(null);
+  const [rtStatus, setRtStatus] = useState<AgentStatus>('off');
+  const [rtMuted, setRtMuted] = useState(false);
+  const [sensors] = useState(() => new LiveSensors());
+  /** While a tool runs, announcements go back to the model (it says them) instead of being spoken over it. */
+  const toolSink = useRef<string[] | null>(null);
+  const positionCache = useRef<{ key: string; info: PositionInfo } | null>(null);
+  const rtActive = rtStatus !== 'off' && rtStatus !== 'error';
 
   const profile = useMemo(() => ({
     ...preferences.profile,
@@ -235,16 +256,23 @@ export function App() {
     ...(avoidElevators.length ? { avoidElevatorAt: avoidElevators } : {}),
   }), [preferences, avoidElevators]);
 
+  /** One voice: the realtime agent reads app announcements when it is connected, the browser voice otherwise. */
+  const say = useCallback((text: string, priority: 'instruction' | 'vision' | 'heading' | 'info') => {
+    if (toolSink.current) toolSink.current.push(text);
+    else if (rtRef.current?.connected) rtRef.current.announce(text);
+    else speak(text, priority);
+  }, []);
+
   const announce = useCallback((text: string, priority: 'instruction' | 'vision' | 'heading' | 'info' = 'info') => {
     setMessage(text);
-    speak(text, priority);
-  }, []);
+    say(text, priority);
+  }, [say]);
 
   const onGuidanceSpeak = useCallback((text: string, priority: 'instruction' | 'vision' | 'heading' | 'info') => {
     setLiveGuidanceAnnouncement('');
     if (guidanceAnnouncementTimer.current !== null) window.clearTimeout(guidanceAnnouncementTimer.current);
     guidanceAnnouncementTimer.current = window.setTimeout(() => setLiveGuidanceAnnouncement(text), 60);
-    speak(text, priority);
+    say(text, priority);
   }, []);
 
   const onGuidanceRouteChange = useCallback((nextRoute: Route) => setRoute(nextRoute), []);
@@ -275,26 +303,76 @@ export function App() {
   /** The one tap a blind user makes: browsers allow speech, mic and iOS motion only after a gesture. */
   function beginApp(): void {
     // One tap does everything a browser only allows inside a gesture: mic, motion (iOS), camera, speech.
-    void requestSensorPermissions().catch(() => undefined);
+    void requestSensorPermissions().catch(() => undefined).then(() => sensors.start());
     setStarted(true);
     setScreen('where');
-    voiceBarRef.current?.startContinuous();
+    const realtime = preferences.settings.realtimeVoice;
+    if (!realtime) voiceBarRef.current?.startContinuous();
     void enableDevicePermissions(true);
     const needs = describeNeeds(preferences);
     const text = returning
       ? `Welcome back${needs ? `. Using your needs: ${needs}` : ''}. ${ASK_TRIP}`
       : WELCOME;
     setMessage(returning ? text : ASK_TRIP);
-    speak(returning ? `${text} ${safetyNotice}` : text, 'info');
+    const greeting = returning ? `${text} ${safetyNotice}` : text;
+    if (!realtime) {
+      speak(greeting, 'info');
+      return;
+    }
+    // Same tap: the mic prompt and audio playback need the gesture. The greeting waits for the voice.
+    void connectRealtime().then((ok) => {
+      if (ok) rtRef.current?.announce(`${greeting} ${LOOK_HINT}`);
+      else speak(greeting, 'info');
+    });
   }
+
+  /** Opens the realtime voice; on failure the browser recognizer and /api/agent take over. */
+  async function connectRealtime(): Promise<boolean> {
+    rtRef.current?.close();
+    const agent = new RealtimeAgent({
+      language: profile.language === 'de' ? 'de' : 'en',
+      liveState: () => liveStateRef.current(),
+      runTool: (name, args) => runToolRef.current(name, args),
+      onStatus: (status) => {
+        setRtStatus(status);
+        setThinking(status === 'thinking');
+      },
+      onUserTranscript: (text) => setHeard(text),
+      onAssistantTranscript: (text) => setMessage(text),
+      onError: (error) => {
+        rtRef.current = null;
+        voiceBarRef.current?.startContinuous();
+        announce(`${error} Switching to the basic voice.`);
+      },
+    });
+    rtRef.current = agent;
+    try {
+      await agent.connect();
+      agent.setMuted(rtMuted);
+      return true;
+    } catch (error) {
+      if (rtRef.current === agent) rtRef.current = null;
+      console.warn('realtime voice unavailable', error);
+      setRtStatus('error');
+      voiceBarRef.current?.startContinuous();
+      return false;
+    }
+  }
+
+  useEffect(() => () => {
+    rtRef.current?.close();
+    sensors.stop();
+  }, [sensors]);
 
   // Hands-free listening: always on the first screen (a blind user can't tap "Blind" first), and on every
   // screen in voice-first mode. Touch users fall back to push-to-talk once they move on.
+  // The realtime voice listens on its own; the recognizer must not hold the mic at the same time.
   useEffect(() => {
     if (!started) return;
-    if (preferences.settings.voiceFirst || !touched) voiceBarRef.current?.startContinuous();
+    if (rtActive) voiceBarRef.current?.stopContinuous();
+    else if (preferences.settings.voiceFirst || !touched) voiceBarRef.current?.startContinuous();
     else if (screen !== 'navigate') voiceBarRef.current?.stopContinuous();
-  }, [started, preferences.settings.voiceFirst, screen, touched]);
+  }, [started, preferences.settings.voiceFirst, screen, touched, rtActive]);
 
   useEffect(() => {
     if (!(startAfterRoute && screen === 'navigate' && route)) return;
@@ -343,8 +421,24 @@ export function App() {
     if (screen === 'navigate' && guidance.phase === 'arrived') {
       releaseScreenWakeLock();
       setScreen('arrived');
+      if (route) setFix({ place: route.to, source: 'route', at: Date.now() });
     }
   }, [guidance.phase, screen]);
+
+  // A room sign the guidance camera read is the best position there is (a misread digit is filtered by the
+  // confidence check). The agent hears it in the next live state.
+  const lastVisionAt = useRef(0);
+  useEffect(() => {
+    if (guidance.lastVision) lastVisionAt.current = Date.now();
+    const sign = guidance.lastVision?.detectedRoomNames[0];
+    if (!sign || (guidance.lastVision?.confidence ?? 0) < 0.6) return;
+    let cancelled = false;
+    void api.localize({ roomText: sign, levelHint: guidance.currentStep?.levelId }).then((loc) => {
+      if (!cancelled && loc.ok && loc.place && loc.confidence >= 0.9) setFix({ place: loc.place, source: 'sign', at: Date.now() });
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guidance.lastVision]);
 
   useEffect(() => () => {
     stopSpeech();
@@ -496,6 +590,7 @@ export function App() {
   async function chooseOrigin(place: Place): Promise<void> {
     rememberPlace('origin', place);
     setOrigin(place);
+    setFix({ place, source: 'user', at: Date.now() });
     setOriginQuery(place.name);
     setOriginMatches([]);
     announce(`Starting point set to ${displayName(place)}.`);
@@ -534,6 +629,7 @@ export function App() {
       if (!matchedPlace) matchedPlace = (await fetchPlaces(roomText))?.[0];
       if (matchedPlace) {
         setOrigin(matchedPlace);
+        setFix({ place: matchedPlace, source: 'sign', at: Date.now() });
         setOriginQuery(matchedPlace.name);
       }
       setOriginMatches([]);
@@ -600,7 +696,7 @@ export function App() {
       setCameraMessage(`${vision.sceneSummary} Confidence ${Math.round(vision.confidence * 100)} percent.`);
       if (vision.utterance && vision.confidence >= 0.6) {
         setMessage(vision.utterance);
-        speak(vision.utterance, 'vision');
+        say(vision.utterance, 'vision');
       }
       if (vision.offRouteSuspected && vision.detectedRoomNames[0] && wasNavigating && token === navToken.current) {
         const sign = vision.detectedRoomNames[0];
@@ -913,6 +1009,10 @@ export function App() {
     const said = transcript.trim();
     if (!said) return;
     setHeard(said);
+    if (rtRef.current?.connected) {
+      rtRef.current.sendText(said);
+      return;
+    }
     const normalized = said.toLowerCase().replace(/[‘’]/g, "'").replace(/[?!.,]+$/g, '');
     const appCommand = parseAppCommand(said);
     if (emergencyOpen && (appCommand?.type === 'no' || /^(close|cancel|back|stop|i'm ok|i am ok|i'm okay|i am okay)$/.test(normalized))) {
@@ -1046,6 +1146,7 @@ export function App() {
     if (screen === 'navigate') guidance.stop();
     rememberPlace('origin', trip.from);
     setOrigin(trip.from);
+    if (fix?.place.id !== trip.from.id) setFix({ place: trip.from, source: 'user', at: Date.now() });
     setOriginQuery(trip.from.name);
     beginNavigation(next);
     announce(`Starting. ${shortSummary(next)}`);
@@ -1252,6 +1353,233 @@ export function App() {
       </label>
     );
   }
+
+  /* ───────── Realtime agent: live state and tools ───────── */
+
+  const navigating = screen === 'navigate' && (guidance.phase === 'navigating' || guidance.phase === 'approaching' || guidance.phase === 'rerouting');
+
+  function currentEstimate() {
+    return estimatePosition({ now: Date.now(), fix, navigating, step: navigating ? guidance.currentStep : null, stepIndex: guidance.stepIndex, progressM: guidance.progressM });
+  }
+
+  /** /api/position for the estimate, cached until the estimate moves ~2 m or changes floor. */
+  async function positionInfo(request: ReturnType<typeof currentEstimate>['request']): Promise<PositionInfo | null> {
+    if (!request.placeId && request.lat == null) return null;
+    const gps = sensors.freshGps();
+    const key = request.placeId ?? `${request.levelId}:${request.lat!.toFixed(5)}:${request.lon!.toFixed(5)}`;
+    const cached = positionCache.current;
+    if (cached?.key === key) return cached.info;
+    try {
+      const ctl = new AbortController();
+      const timer = window.setTimeout(() => ctl.abort(), 1500);
+      const res = await fetch(API.position, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...request, ...(gps ? { gps: { lat: gps.lat, lon: gps.lon, accuracyM: gps.accuracyM } } : {}) }), signal: ctl.signal });
+      window.clearTimeout(timer);
+      const info = (await res.json()) as PositionInfo;
+      positionCache.current = { key, info };
+      return info;
+    } catch {
+      return cached?.info ?? null;
+    }
+  }
+
+  async function buildLiveState(): Promise<string> {
+    const now = Date.now();
+    const estimate = currentEstimate();
+    const info = await positionInfo(estimate.request);
+    const step = guidance.currentStep;
+    const gps = sensors.freshGps(now);
+    const vision = guidance.lastVision ?? null;
+    return formatLiveState({
+      now,
+      screen: screen === 'navigate' ? `navigating (${guidance.phase})` : screen === 'arrived' ? 'arrived' : screen === 'settings' ? 'settings' : 'trip planning',
+      trip: {
+        from: (pending?.from ?? origin ?? undefined)?.name,
+        to: (pending?.to ?? destination ?? route?.to ?? undefined)?.name,
+        confirming: Boolean(pending?.from && pending?.to),
+        options: agentOptions?.places.map((p) => placeLabel(p)),
+      },
+      navigation: navigating && route && step ? {
+        stepIndex: guidance.stepIndex,
+        stepCount: route.steps.length,
+        instruction: step.text,
+        nextInstruction: guidance.nextStep?.text,
+        remainingStepM: guidance.remainingStepM,
+        remainingTotalM: guidance.remainingTotalM,
+        bearingDeg: isVerticalStep(step) ? null : bearingAt(step.polyline, guidance.progressM) ?? step.bearingDeg,
+        vertical: isVerticalStep(step),
+      } : undefined,
+      estimate,
+      info,
+      heading: sensors.heading(),
+      moving: sensors.sensor?.moving ?? guidance.moving,
+      gps: gps ? { lat: gps.lat, lon: gps.lon, accuracyM: gps.accuracyM, ageS: Math.round((now - gps.at) / 1000) } : null,
+      needs: [...profile.needs, ...(profile.avoidStairs ? ['avoidStairs'] : [])],
+      ...(vision?.sceneSummary ? { lastSeen: { summary: vision.sceneSummary, ageS: Math.round((now - lastVisionAt.current) / 1000) } } : {}),
+    });
+  }
+
+  /** Runs one model tool call. Anything the app announces meanwhile is handed back for the model to say. */
+  async function runTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    toolSink.current = [];
+    try {
+      const result = await toolBody(name, args);
+      const said = toolSink.current ?? [];
+      if (!said.length) return result;
+      return { ...result, output: { ...(result.output as object), app_said: said.join(' '), note_app_said: 'Not spoken yet: say it (step instructions word for word).' } };
+    } finally {
+      toolSink.current = null;
+    }
+  }
+
+  async function toolBody(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    switch (name) {
+      case 'get_position':
+        return { output: { state: await buildLiveState() } };
+
+      case 'look': {
+        try {
+          const jpegBase64 = await captureFrame(1024, 0.7);
+          const h = sensors.heading();
+          setCameraFramePreview(`data:image/jpeg;base64,${jpegBase64}`);
+          const facing = h.deg == null ? 'unknown direction (no compass)' : `${Math.round(h.deg)}° (${compassName(h.deg)})${h.reliable ? '' : ', compass unreliable'}`;
+          return {
+            output: { ok: true, facing, note: 'The photo follows. If it shows a room sign or landmark that tells where the user is, call set_position.' },
+            image: { jpegBase64, caption: `Camera photo just taken; the phone points ${facing}. Looking for: ${String(args.purpose ?? '')}` },
+          };
+        } catch (error) {
+          return { output: { ok: false, error: `Camera unavailable: ${error instanceof Error ? error.message : 'unknown error'}. Ask the user instead.` } };
+        }
+      }
+
+      case 'set_position': {
+        const text = String(args.place ?? '').trim();
+        const evidence = args.evidence === 'user' ? 'user' : 'sign';
+        const distanceM = Number(args.distance_m) || 0;
+        const levelHint = currentEstimate().request.levelId ?? fix?.place.levelId;
+        const loc = await api.localize({ roomText: text, levelHint });
+        if (!loc.ok) return { output: { ok: false, error: loc.message, hint: 'Look again, or ask the user for a room number.' } };
+        const place = loc.place ?? (await fetchPlaces(text))?.[0];
+        if (!place) return { output: { ok: false, error: `No place matches ${text}.` } };
+        const next: Fix = { place, source: evidence, at: Date.now(), distanceM };
+        setFix(next);
+        let rerouted = false;
+        if (navigating && route) {
+          // Far from where the route says they are (or another floor): plan again from the real position.
+          const est = currentEstimate().request;
+          const far = est.lat != null && est.lon != null && (est.levelId !== place.levelId || Math.hypot((est.lat - place.lat) * 110540, (est.lon - place.lon) * 75000) > 15);
+          if (far) {
+            await rerouteFromNode(place.nodeId, place.name);
+            rerouted = true;
+          }
+        } else {
+          setOrigin(place);
+          setOriginQuery(place.name);
+          if (pending) setPending({ ...pending, from: place });
+        }
+        positionCache.current = null;
+        const info = await positionInfo({ placeId: place.id });
+        return {
+          output: {
+            ok: true,
+            matched: place.name,
+            confidence: loc.confidence,
+            ...(loc.confidence < 0.9 ? { note: `Approximate: "${text}" is not an exact room name; the closest is ${place.name}. Say so, and check with another sign if it matters.` } : {}),
+            alternatives: loc.alternatives.slice(0, 3).map((p) => p.name),
+            rerouted,
+            floor: info?.ok ? info.floor : undefined,
+            nearby: info?.ok ? info.nearby.slice(0, 6).map((p) => `${p.label && p.kind !== 'room' ? p.label : p.name} ${Math.round(p.distM)} m`) : undefined,
+          },
+        };
+      }
+
+      case 'plan_trip': {
+        const est = currentEstimate();
+        const info = await positionInfo(est.request);
+        const near = fix?.place.id ?? (info?.ok ? info.nearby.find((p) => p.kind === 'room')?.placeId : undefined);
+        const res = await fetch(API.realtimeResolve, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ fromText: args.from ?? null, toText: args.to ?? null, nearPlaceId: near, needs: profile.needs }),
+        }).then((r) => r.json() as Promise<ResolveTripResponse>);
+        const from = res.from ?? pending?.from ?? (fix?.place) ?? origin ?? undefined;
+        const to = res.to ?? (args.to ? undefined : pending?.to ?? destination ?? undefined);
+        if (res.to && (screen === 'navigate' || screen === 'arrived')) {
+          guidance.stop();
+          releaseScreenWakeLock();
+          setScreen('where');
+        }
+        setPending({ from, to });
+        setAgentOptions(res.options?.length ? { places: res.options, for: res.optionsFor ?? 'to' } : null);
+        setMessage(res.say);
+        return {
+          output: {
+            say: res.say,
+            from: from?.name ?? null,
+            to: to?.name ?? null,
+            ...(res.options?.length ? { options: res.options.map((p) => placeLabel(p)), options_for: res.optionsFor } : {}),
+            ...(res.notFound ? { not_found: res.notFound } : {}),
+            ...(!from ? { start_unknown: 'Localize first (look, or ask where they are).' } : {}),
+          },
+        };
+      }
+
+      case 'start_navigation': {
+        if (pending?.from && pending.to) {
+          await confirmPending();
+          return { output: { ok: true, note: 'Guidance started; the app reads the first instruction right after you. Say at most a few words.' } };
+        }
+        if (route && screen === 'preview') {
+          beginNavigation();
+          return { output: { ok: true } };
+        }
+        return { output: { ok: false, error: pending?.to ? 'The start is unknown: localize the user first.' : 'No trip yet: call plan_trip first.' } };
+      }
+
+      case 'navigation': {
+        const action = String(args.action);
+        if (screen !== 'navigate') return { output: { ok: false, error: 'Not navigating.' } };
+        if (action === 'next') guidance.next();
+        else if (action === 'back') guidance.back();
+        else if (action === 'repeat') guidance.repeat();
+        else if (action === 'stop') {
+          guidance.stop();
+          releaseScreenWakeLock();
+          setScreen('preview');
+        }
+        return { output: { ok: true } };
+      }
+
+      case 'set_needs': {
+        const add = (Array.isArray(args.add) ? args.add : []) as (Need | 'avoidStairs')[];
+        const remove = (Array.isArray(args.remove) ? args.remove : []) as (Need | 'avoidStairs')[];
+        for (const need of add) {
+          if (need === 'avoidStairs') updatePreferences((current) => ({ ...current, profile: { ...current.profile, avoidStairs: true } }));
+          else setNeedState(need, true);
+        }
+        for (const need of remove) {
+          if (need === 'avoidStairs') updatePreferences((current) => ({ ...current, profile: { ...current.profile, avoidStairs: false } }));
+          else setNeedState(need, false);
+        }
+        return { output: { ok: true, note: 'Routes planned from now on use these needs.' } };
+      }
+
+      case 'report_elevator_broken':
+        await reportElevatorOutOfService();
+        return { output: { ok: true } };
+
+      case 'emergency':
+        await runAppCommand('emergency');
+        return { output: { ok: true, location: locationDescription() } };
+
+      default:
+        return { output: { ok: false, error: `Unknown tool ${name}.` } };
+    }
+  }
+
+  const liveStateRef = useRef(buildLiveState);
+  liveStateRef.current = buildLiveState;
+  const runToolRef = useRef(runTool);
+  runToolRef.current = runTool;
 
   const voiceFirst = preferences.settings.voiceFirst;
   const tripFrom = pending?.from ?? origin ?? null;
@@ -1484,6 +1812,12 @@ export function App() {
             </div>
           </div>
           <label className="toggle-row"><input type="checkbox" checked={voiceFirst} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, voiceFirst: event.target.checked } }))} /><span><strong>Voice-first mode</strong><small>Minimal screen, always listening. On automatically for blind users.</small></span></label>
+          <label className="toggle-row"><input type="checkbox" checked={preferences.settings.realtimeVoice} onChange={(event) => {
+            const enabled = event.target.checked;
+            updatePreferences((current) => ({ ...current, settings: { ...current.settings, realtimeVoice: enabled } }));
+            if (enabled) void connectRealtime();
+            else { rtRef.current?.close(); rtRef.current = null; setRtStatus('off'); }
+          }} /><span><strong>Conversational voice</strong><small>Answers in under a second, knows where you are and can look through the camera. Needs a connection.</small></span></label>
           <VoicePicker value={preferences.settings.voiceName} onChange={(voiceName) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, voiceName } }))} />
           <label className="setting-control" htmlFor="speech-rate"><span><strong>Speech rate</strong><small>{preferences.settings.speechRate.toFixed(1)}×</small></span><input id="speech-rate" type="range" min="0.6" max="1.5" step="0.1" value={preferences.settings.speechRate} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, speechRate: Number(event.target.value) } }))} /></label>
           <label className="toggle-row"><input type="checkbox" checked={preferences.settings.speakWithAppVoice} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, speakWithAppVoice: event.target.checked } }))} /><span><strong>Speak with app voice</strong><small>Turn this off when your screen reader already reads the instruction.</small></span></label>
@@ -1530,6 +1864,18 @@ export function App() {
       )}
 
       <footer className="dock" hidden={!started || screen === 'settings'}>
+        {rtActive && (
+          <RealtimeDock
+            status={rtStatus}
+            muted={rtMuted}
+            voiceFirst={voiceFirst}
+            onToggleMute={() => { const next = !rtMuted; setRtMuted(next); rtRef.current?.setMuted(next); }}
+            onInterrupt={() => rtRef.current?.cancelSpeech()}
+            onText={(text) => { void dispatchCommand(text); }}
+          />
+        )}
+        {/* Kept mounted (hidden) while the realtime voice runs, so the fallback can take over at once. */}
+        <div hidden={rtActive}>
         <VoiceBar
           ref={voiceBarRef}
           voiceFirst={voiceFirst}
@@ -1537,6 +1883,7 @@ export function App() {
           language={profile.language ?? 'en'}
           onCommand={(transcript) => { void dispatchCommand(transcript); }}
         />
+        </div>
       </footer>
     </div>
   );

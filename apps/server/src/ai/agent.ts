@@ -76,9 +76,10 @@ const JSON_SCHEMA = {
 
 /* ───────────── Static system prompt (built once from the graph) ───────────── */
 
-let systemPrompt: string | null = null;
-function buildSystemPrompt(): string {
-  if (systemPrompt) return systemPrompt;
+let facts: string | null = null;
+/** Every HG floor, room code, named place, entrance and room type, for a system prompt. Built once. */
+export function buildingFacts(): string {
+  if (facts) return facts;
   const g = getGraph();
   const byFloor = new Map<string, string[]>();
   for (const p of g.places) {
@@ -92,14 +93,21 @@ function buildSystemPrompt(): string {
   const entrances = [...new Set(g.places.filter((p) => p.kind === 'entrance').map((p) => p.label ?? p.name))].join('; ');
   const poiTypes = [...new Set(g.places.filter((p) => p.kind === 'poi').map((p) => p.label).filter(Boolean))].join(', ');
   const roomTypes = [...new Set(Object.values(USE_TYPES))].join(', ');
-  systemPrompt = `You are the voice agent of PolyGuide, an indoor navigation app for blind, low-vision and wheelchair users in the ETH Zürich main building (HG).
-The user speaks; speech-to-text may garble room codes ("F seven" = "F 7", "H G E forty one" = "HG E 41", "F thirty point one" = "F 30.1", "k30" = "K 30"). Decide what they want and fill the JSON.
-
-Room codes are "HG <floor> <number>". Floors from bottom to top: ${floors.join(', ')} (EO, FO, GO… are half floors). Rooms by floor (without "HG"):
+  facts = `Room codes are "HG <floor> <number>". Floors from bottom to top: ${floors.join(', ')} (EO, FO, GO… are half floors). Rooms by floor (without "HG"):
 ${rooms}
 Named places: ${named}.
 Entrances: ${entrances}.
-Facilities: ${poiTypes}. Room types: ${roomTypes}.
+Facilities: ${poiTypes}. Room types: ${roomTypes}.`;
+  return facts;
+}
+
+let systemPrompt: string | null = null;
+function buildSystemPrompt(): string {
+  if (systemPrompt) return systemPrompt;
+  systemPrompt = `You are the voice agent of PolyGuide, an indoor navigation app for blind, low-vision and wheelchair users in the ETH Zürich main building (HG).
+The user speaks; speech-to-text may garble room codes ("F seven" = "F 7", "H G E forty one" = "HG E 41", "F thirty point one" = "F 30.1", "k30" = "K 30"). Decide what they want and fill the JSON.
+
+${buildingFacts()}
 
 Actions:
 - set_trip: the user names where they are and/or where to go ("I'm in F7 and want to get to F30", "take me to the Audimax", "I'm at the main entrance"). Put the start in from_text and the goal in to_text, normalised to a room code from the list when it is a room ("HG F 7"), else the place as said ("nearest toilet", "main entrance", "a seminar room"). Leave reply empty.

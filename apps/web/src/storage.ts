@@ -14,6 +14,8 @@ export interface AppSettings {
   textScale: 1 | 1.25 | 1.5;
   /** Camera/motion/mic were granted once; the start tap re-requests them silently. */
   permissionsGranted: boolean;
+  /** Speech-to-speech agent (OpenAI Realtime) that also sees the camera; off = recognizer + text agent. */
+  realtimeVoice: boolean;
 }
 
 export interface Preferences {
@@ -35,6 +37,7 @@ export const defaultPreferences: Preferences = {
     haptics: true,
     textScale: 1,
     permissionsGranted: false,
+    realtimeVoice: true,
   },
 };
 
@@ -74,6 +77,7 @@ export function loadPreferences(): Preferences {
         haptics: settingsData.haptics !== false,
         textScale: settingsData.textScale === 1.25 || settingsData.textScale === 1.5 ? settingsData.textScale : 1,
         permissionsGranted: settingsData.permissionsGranted === true,
+        realtimeVoice: settingsData.realtimeVoice !== false,
       },
     };
   } catch {
