@@ -1,201 +1,255 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { RouteResult } from '@polyguide/shared';
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import type { RouteResult, RouteStep } from '@polyguide/shared';
 import { api, type FloorMap } from './api';
 
 type Route = Extract<RouteResult, { ok: true }>;
-type Position = [number, number];
-interface MapGeometry {
-  type: string;
-  coordinates: unknown;
-}
-interface MapFeature {
-  id?: string | number;
-  geometry?: MapGeometry | null;
-  properties?: Record<string, unknown>;
-}
-interface ProjectedPoint {
+type LonLat = [number, number];
+interface XY {
   x: number;
   y: number;
 }
-
-// Drawing units ≈ CSS px on a phone (the SVG renders ~350–600 px wide), so marker text stays legible.
-const viewWidth = 600;
-const viewHeight = 400;
-const padding = 40;
-/** Metres of context shown around the route. */
-const ROUTE_MARGIN_M = 25;
-
-function isPosition(value: unknown): value is Position {
-  return Array.isArray(value) && typeof value[0] === 'number' && typeof value[1] === 'number';
+interface MapFeature {
+  geometry?: { type: string; coordinates: unknown } | null;
+  properties?: Record<string, unknown>;
+}
+interface View {
+  cx: number;
+  cy: number;
+  /** Half the visible width in metres. */
+  half: number;
 }
 
-function gatherPositions(value: unknown, points: Position[] = []): Position[] {
-  if (isPosition(value)) points.push([value[0], value[1]]);
-  else if (Array.isArray(value)) value.forEach((item) => gatherPositions(item, points));
-  return points;
-}
-
-function coordinates(value: unknown): Position[] {
-  return Array.isArray(value) ? value.filter(isPosition).map((point) => [point[0], point[1]]) : [];
-}
-
-function polygonRings(value: unknown): Position[][] {
-  if (!Array.isArray(value)) return [];
-  return value.filter(Array.isArray).map((ring) => coordinates(ring));
-}
-
-function mapLabel(feature: MapFeature): string {
-  const candidate = feature.properties?.name;
-  return typeof candidate === 'string' ? candidate : '';
-}
-
-function mapFeature(feature: MapFeature, project: (position: Position) => ProjectedPoint, key: string, destinationId: string) {
-  const geometry = feature.geometry;
-  if (!geometry) return null;
-  // Other places stay quiet (small unlabelled dots); only the route's own points get labels.
-  if (geometry.type === 'Point' && isPosition(geometry.coordinates)) {
-    const point = project(geometry.coordinates);
-    return <circle key={key} className="map-place-dot" cx={point.x} cy={point.y} r="5"><title>{mapLabel(feature) || 'Place on this floor'}</title></circle>;
-  }
-  const roomClass = feature.properties?.placeId === destinationId ? 'map-room map-room-destination' : 'map-room';
-  if (geometry.type === 'LineString') {
-    const points = coordinates(geometry.coordinates).map(project);
-    if (points.length < 2) return null;
-    return <polyline key={key} className="map-pathway" points={points.map((point) => `${point.x},${point.y}`).join(' ')} />;
-  }
-  if (geometry.type === 'MultiLineString' && Array.isArray(geometry.coordinates)) {
-    return geometry.coordinates.map((line, index) => {
-      const points = coordinates(line).map(project);
-      return points.length > 1 ? <polyline key={`${key}-${index}`} className="map-pathway" points={points.map((point) => `${point.x},${point.y}`).join(' ')} /> : null;
-    });
-  }
-  if (geometry.type === 'Polygon') {
-    const [outer] = polygonRings(geometry.coordinates);
-    const points = outer?.map(project) ?? [];
-    return points.length > 2 ? <polygon key={key} className={roomClass} points={points.map((point) => `${point.x},${point.y}`).join(' ')}><title>{mapLabel(feature) || 'Room outline'}</title></polygon> : null;
-  }
-  if (geometry.type === 'MultiPolygon' && Array.isArray(geometry.coordinates)) {
-    return geometry.coordinates.map((polygon, index) => {
-      const [outer] = polygonRings(polygon);
-      const points = outer?.map(project) ?? [];
-      return points.length > 2 ? <polygon key={`${key}-${index}`} className={roomClass} points={points.map((point) => `${point.x},${point.y}`).join(' ')}><title>{mapLabel(feature) || 'Room outline'}</title></polygon> : null;
-    });
-  }
-  return null;
-}
-
-interface Marker {
-  at: Position;
-  kind: 'start' | 'end' | 'transfer';
-  glyph: string;
-  label: string;
-}
+/** The map frame is 3:2; the drawing is in metres, so zoom and pan only change the viewBox. */
+const ASPECT = 2 / 3;
+const FIT_MARGIN_M = 12;
+const MIN_HALF_M = 8;
+const MAX_HALF_M = 220;
 
 const floorOf = (levelId: string) => levelId.split('.').at(-1) ?? levelId;
+const shortRoom = (name: string) => name.replace(/^HG\s+/, '');
+const isVertical = (s: RouteStep) => Boolean(s.toLevelId && s.toLevelId !== s.levelId);
+const isPos = (v: unknown): v is LonLat => Array.isArray(v) && typeof v[0] === 'number' && typeof v[1] === 'number';
+const ring = (v: unknown): LonLat[] => (Array.isArray(v) ? v.filter(isPos) : []);
 
-/** Where the route starts, ends, and changes floor — the only labelled points on the map. */
-function routeMarkers(route: Route, levelId: string): Marker[] {
-  const markers: Marker[] = [];
-  const first = route.steps[0];
-  if (first?.levelId === levelId && first.polyline[0]) markers.push({ at: first.polyline[0], kind: 'start', glyph: 'S', label: 'Start' });
-  for (const step of route.steps) {
-    if (!step.toLevelId || step.toLevelId === step.levelId) continue;
-    const what = step.maneuver === 'take_elevator' ? 'Elevator' : step.maneuver.startsWith('take_ramp') ? 'Ramp' : 'Stairs';
-    if (step.levelId === levelId && step.polyline[0]) markers.push({ at: step.polyline[0], kind: 'transfer', glyph: '↕', label: `${what} to floor ${floorOf(step.toLevelId)}` });
-    const exit = step.polyline.at(-1);
-    if (step.toLevelId === levelId && exit) markers.push({ at: exit, kind: 'transfer', glyph: '↕', label: `${what} from floor ${floorOf(step.levelId)}` });
-  }
-  const last = route.steps.at(-1);
-  if (last?.maneuver === 'arrive' && last.levelId === levelId && last.polyline[0]) markers.push({ at: last.polyline[0], kind: 'end', glyph: '●', label: route.to.label ?? route.to.name });
-  return markers;
+/** Outer rings of a Polygon / MultiPolygon. */
+function outerRings(feature: MapFeature): LonLat[][] {
+  const g = feature.geometry;
+  if (!g || !Array.isArray(g.coordinates)) return [];
+  if (g.type === 'Polygon') return [ring(g.coordinates[0])];
+  if (g.type === 'MultiPolygon') return g.coordinates.map((poly) => ring(Array.isArray(poly) ? poly[0] : []));
+  return [];
 }
 
-/** Rough label width in viewBox units (no DOM measuring needed). */
-const labelWidth = (text: string) => text.length * 13 + 24;
+type StepState = 'done' | 'current' | 'next';
 
-export function RouteMap({ route, levelId }: { route: Route; levelId: string }) {
+const floorCache = new Map<string, { promise: Promise<FloorMap>; value?: FloorMap }>();
+function loadFloor(levelId: string): Promise<FloorMap> {
+  const hit = floorCache.get(levelId);
+  if (hit) return hit.promise;
+  const entry: { promise: Promise<FloorMap>; value?: FloorMap } = { promise: Promise.resolve(null as unknown as FloorMap) };
+  entry.promise = api.floorMap(levelId).then(
+    (data) => { entry.value = data; return data; },
+    (err) => { floorCache.delete(levelId); throw err; },
+  );
+  floorCache.set(levelId, entry);
+  return entry.promise;
+}
+
+interface Props {
+  route: Route;
+  levelId: string;
+  /** Navigate screen: highlight progress and follow the current step. */
+  activeStepIndex?: number;
+  compact?: boolean;
+}
+
+export function RouteMap({ route, levelId, activeStepIndex, compact = false }: Props) {
   const [floorMap, setFloorMap] = useState<FloorMap | null>(null);
   const [mapError, setMapError] = useState(false);
+  const [view, setView] = useState<View | null>(null);
+  const [pxWidth, setPxWidth] = useState(600);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const drag = useRef<{ x: number; y: number; view: View } | null>(null);
 
-  // Keep a response only if it is for the floor still selected. (A per-effect "active" flag lost
-  // the first load: the cleanup ran before the single in-flight request resolved.)
-  const currentLevel = useRef(levelId);
-  currentLevel.current = levelId;
+  // One cached request per floor, shared by every map (preview + navigate); a failed load can be retried.
   useEffect(() => {
+    let cancelled = false;
     setMapError(false);
-    setFloorMap(null);
-    api.floorMap(levelId)
-      .then((data) => { if (currentLevel.current === levelId) setFloorMap(data); })
-      .catch(() => { if (currentLevel.current === levelId) { setFloorMap(null); setMapError(true); } });
+    setFloorMap(floorCache.get(levelId)?.value ?? null);
+    loadFloor(levelId)
+      .then((data) => { if (!cancelled) setFloorMap(data); })
+      .catch(() => { if (!cancelled) setMapError(true); });
+    return () => { cancelled = true; };
   }, [levelId]);
 
-  const routeLines: Position[][] = route.steps
-    .filter((step) => step.levelId === levelId && step.polyline.length > 1)
-    .map((step) => step.polyline.map(([lon, lat]) => [lon, lat]));
+  // Labels keep a constant on-screen size, so we need the rendered width.
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([entry]) => setPxWidth(Math.max(200, entry.contentRect.width)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  /* ── Local metric projection around the route (north up). ── */
+  const origin = route.steps[0]?.polyline[0] ?? ([route.to.lon, route.to.lat] as LonLat);
+  const kx = Math.cos((origin[1] * Math.PI) / 180) * 111320;
+  const toXY = ([lon, lat]: LonLat): XY => ({ x: (lon - origin[0]) * kx, y: -(lat - origin[1]) * 110540 });
+  const pts = (line: LonLat[]) => line.map(toXY).map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ');
+
   const features = (floorMap?.features ?? []) as MapFeature[];
-  // Frame the route (plus a margin) when this floor has one; otherwise the whole floor.
-  const allPositions = useMemo(() => {
-    const routePoints = routeLines.flat();
-    if (routePoints.length) {
-      const lat0 = routePoints[0][1];
-      const dLat = ROUTE_MARGIN_M / 110540;
-      const dLon = ROUTE_MARGIN_M / (111320 * Math.cos((lat0 * Math.PI) / 180));
-      return routePoints.flatMap(([lon, lat]) => [[lon - dLon, lat - dLat], [lon + dLon, lat + dLat]] as Position[]);
+  const rooms = useMemo(() => features.filter((f) => f.properties?.layer === 'room'), [features]);
+
+  const stepsHere = route.steps.filter((s) => s.levelId === levelId && !isVertical(s) && s.polyline.length > 1);
+  const stateOf = (s: RouteStep): StepState =>
+    activeStepIndex == null ? 'next' : s.index < activeStepIndex ? 'done' : s.index === activeStepIndex ? 'current' : 'next';
+
+  /* ── Rooms the route passes on this floor get short labels, like the signs you'll see. ── */
+  const passedIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const s of route.steps) if (s.levelId === levelId) for (const l of s.expectedLandmarks) if (l.placeId && l.kind === 'room_sign') ids.add(l.placeId);
+    ids.add(route.to.id);
+    return ids;
+  }, [route, levelId]);
+  const roomLabels = useMemo(() => {
+    const out: { id: string; text: string; at: XY; destination: boolean }[] = [];
+    for (const f of rooms) {
+      const id = f.properties?.placeId;
+      const name = f.properties?.name;
+      if (typeof id !== 'string' || typeof name !== 'string' || !passedIds.has(id)) continue;
+      const r = outerRings(f)[0];
+      if (!r?.length) continue;
+      const c = r.map(toXY).reduce((a, p) => ({ x: a.x + p.x / r.length, y: a.y + p.y / r.length }), { x: 0, y: 0 });
+      out.push({ id, text: shortRoom(name), at: c, destination: id === route.to.id });
     }
-    return features.flatMap((feature) => gatherPositions(feature.geometry?.coordinates));
-  }, [features, routeLines]);
-  if (!allPositions.length) allPositions.push([route.to.lon, route.to.lat]);
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rooms, passedIds]);
 
-  const referenceLatitude = allPositions.reduce((sum, point) => sum + point[1], 0) / allPositions.length;
-  const longitudeScale = Math.cos((referenceLatitude * Math.PI) / 180) * 111320;
-  const meterPoints = allPositions.map(([lon, lat]) => ({ x: lon * longitudeScale, y: lat * 110540 }));
-  const minX = Math.min(...meterPoints.map((point) => point.x));
-  const maxX = Math.max(...meterPoints.map((point) => point.x));
-  const minY = Math.min(...meterPoints.map((point) => point.y));
-  const maxY = Math.max(...meterPoints.map((point) => point.y));
-  const width = Math.max(1, maxX - minX);
-  const height = Math.max(1, maxY - minY);
-  const scale = Math.min((viewWidth - padding * 2) / width, (viewHeight - padding * 2) / height);
-  const xOffset = (viewWidth - width * scale) / 2;
-  const yOffset = (viewHeight - height * scale) / 2;
-  const project = (position: Position): ProjectedPoint => ({
-    x: xOffset + (position[0] * longitudeScale - minX) * scale,
-    y: viewHeight - yOffset - (position[1] * 110540 - minY) * scale,
-  });
+  /* ── Markers: start, numbered turns, floor changes, destination. ── */
+  type Marker = { at: XY; kind: 'start' | 'turn' | 'transfer' | 'end'; glyph: string; label?: string; state: StepState };
+  const markers: Marker[] = [];
+  const first = route.steps[0];
+  if (first?.levelId === levelId && first.polyline[0]) markers.push({ at: toXY(first.polyline[0]), kind: 'start', glyph: 'S', label: 'Start', state: stateOf(first) });
+  for (const s of route.steps) {
+    if (isVertical(s)) {
+      const what = s.maneuver === 'take_elevator' ? 'Elevator' : s.maneuver.startsWith('take_ramp') ? 'Ramp' : 'Stairs';
+      if (s.levelId === levelId && s.polyline[0]) markers.push({ at: toXY(s.polyline[0]), kind: 'transfer', glyph: '↕', label: `${what} to ${floorOf(s.toLevelId!)}`, state: stateOf(s) });
+      const exit = s.polyline.at(-1);
+      if (s.toLevelId === levelId && exit) markers.push({ at: toXY(exit), kind: 'transfer', glyph: '↕', label: `${what} from ${floorOf(s.levelId)}`, state: stateOf(s) });
+    } else if (s.index > 0 && s.levelId === levelId && s.maneuver !== 'arrive' && s.polyline[0] && !isVertical(route.steps[s.index - 1])) {
+      markers.push({ at: toXY(s.polyline[0]), kind: 'turn', glyph: String(s.index + 1), state: stateOf(s) });
+    }
+  }
+  const last = route.steps.at(-1);
+  if (last?.maneuver === 'arrive' && last.levelId === levelId && last.polyline[0]) markers.push({ at: toXY(last.polyline[0]), kind: 'end', glyph: '●', label: route.to.label ?? shortRoom(route.to.name), state: stateOf(last) });
 
-  const markers = routeMarkers(route, levelId);
+  /* ── Fit: the current step (navigating) or the whole route on this floor. ── */
+  const fitView = (): View => {
+    const focus = activeStepIndex != null ? route.steps[activeStepIndex] : undefined;
+    const focusLines = focus && focus.levelId === levelId && !isVertical(focus) ? [focus.polyline] : stepsHere.map((s) => s.polyline);
+    let xy = focusLines.flat().map(toXY);
+    if (!xy.length) xy = markers.map((m) => m.at);
+    if (!xy.length) xy = rooms.flatMap((f) => outerRings(f).flat().map(toXY));
+    if (!xy.length) return { cx: 0, cy: 0, half: 40 };
+    const xs = xy.map((p) => p.x);
+    const ys = xy.map((p) => p.y);
+    const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+    const half = Math.min(MAX_HALF_M, Math.max(MIN_HALF_M * 2, (maxX - minX) / 2 + FIT_MARGIN_M, ((maxY - minY) / 2 + FIT_MARGIN_M) / ASPECT));
+    return { cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, half };
+  };
+  const fitKey = `${route.routeId}|${levelId}|${activeStepIndex ?? ''}|${floorMap ? 1 : 0}`;
+  useEffect(() => setView(fitView()), [fitKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const v = view ?? fitView();
+  const vb = { x: v.cx - v.half, y: v.cy - v.half * ASPECT, w: v.half * 2, h: v.half * 2 * ASPECT };
+  /** Metres per CSS pixel: multiply a px size by this to draw it at a constant screen size. */
+  const u = vb.w / pxWidth;
+
+  const zoom = (factor: number) => setView({ ...v, half: Math.min(MAX_HALF_M, Math.max(MIN_HALF_M, v.half * factor)) });
+  const onPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
+    drag.current = { x: e.clientX, y: e.clientY, view: v };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onPointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
+    const d = drag.current;
+    if (!d) return;
+    setView({ ...d.view, cx: d.view.cx - (e.clientX - d.x) * u, cy: d.view.cy - (e.clientY - d.y) * u });
+  };
+  const onPointerUp = () => { drag.current = null; };
+
   const floor = floorOf(levelId);
-  const caption = routeLines.length
-    ? `Floor ${floor}. The blue line is your route${markers.length ? `; marked: ${markers.map((m) => m.label).join(', ')}` : ''}. The written steps below give the full route.`
+  const routeHere = stepsHere.length > 0;
+  const caption = routeHere
+    ? `Floor ${floor}. Your route is the blue line${markers.some((m) => m.kind === 'turn') ? '; numbers match the steps' : ''}.${markers.filter((m) => m.label).map((m) => ` ${m.label}.`).join('')}`
     : `Floor ${floor}. Your route does not walk on this floor.`;
 
   return (
-    <figure className="map-figure">
-      {mapError && <p className="map-note">Floor drawing is unavailable. The written route steps are still available below.</p>}
-      <svg className="route-map" viewBox={`0 0 ${viewWidth} ${viewHeight}`} role="img" aria-label={caption}>
-        <rect className="map-background" x="0" y="0" width={viewWidth} height={viewHeight} />
-        <clipPath id="map-clip"><rect x="0" y="0" width={viewWidth} height={viewHeight} /></clipPath>
-        <g clipPath="url(#map-clip)">{features.map((feature, index) => mapFeature(feature, project, String(feature.id ?? index), route.to.id))}</g>
-        {routeLines.map((line, index) => {
-          const points = line.map(project).map((point) => `${point.x},${point.y}`).join(' ');
-          return <g key={`route-${index}`}><polyline className="map-route-outline" points={points} /><polyline className="map-route-line" points={points} /></g>;
-        })}
-        {markers.map((marker, index) => {
-          const point = project(marker.at);
-          const width = labelWidth(marker.label);
-          // Keep labels inside the frame: flip to the left near the right edge.
-          const left = point.x + 28 + width > viewWidth;
-          const x = left ? point.x - 28 - width : point.x + 28;
-          return (
-            <g key={`marker-${index}`} className={`map-marker map-marker-${marker.kind}`}>
-              <circle cx={point.x} cy={point.y} r="20" />
-              <text className="map-marker-glyph" x={point.x} y={point.y + 8}>{marker.glyph}</text>
-              <rect className="map-marker-label-bg" x={x} y={point.y - 20} width={width} height="40" rx="10" />
-              <text className="map-marker-label" x={x + 12} y={point.y + 8}>{marker.label}</text>
-            </g>
-          );
-        })}
-      </svg>
+    <figure className={`map-figure${compact ? ' map-figure-compact' : ''}`}>
+      {mapError && <p className="map-note">The floor drawing could not load. The written steps still give the full route.</p>}
+      <div className="map-stage">
+        <svg
+          ref={svgRef}
+          className="route-map"
+          viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
+          role="img"
+          aria-label={caption}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+        >
+          <rect className="map-background" x={vb.x} y={vb.y} width={vb.w} height={vb.h} />
+          <g className="map-rooms">
+            {rooms.map((f, i) =>
+              outerRings(f).map((r, j) => (
+                <polygon key={`${i}-${j}`} className={f.properties?.placeId === route.to.id ? 'map-room map-room-destination' : 'map-room'} points={pts(r)} />
+              )),
+            )}
+          </g>
+          <g className="map-route">
+            {stepsHere.map((s) => (
+              <g key={s.index} className={`map-leg map-leg-${stateOf(s)}`}>
+                <polyline className="map-route-outline" points={pts(s.polyline)} style={{ strokeWidth: 14 * u }} />
+                <polyline className="map-route-line" points={pts(s.polyline)} style={{ strokeWidth: (stateOf(s) === 'current' ? 9 : 7) * u }} />
+              </g>
+            ))}
+          </g>
+          <g className="map-room-labels">
+            {roomLabels.map((l) => (
+              <text key={l.id} className={l.destination ? 'map-room-label map-room-label-destination' : 'map-room-label'} x={l.at.x} y={l.at.y} style={{ fontSize: 13 * u, strokeWidth: 4 * u }}>
+                {l.text}
+              </text>
+            ))}
+          </g>
+          <g className="map-markers">
+            {markers.map((m, i) => {
+              const r = (m.kind === 'turn' ? 12 : 17) * u;
+              const labelW = m.label ? (m.label.length * 9.5 + 20) * u : 0;
+              const flip = m.at.x + r + 8 * u + labelW > vb.x + vb.w;
+              const lx = flip ? m.at.x - r - 8 * u - labelW : m.at.x + r + 8 * u;
+              return (
+                <g key={i} className={`map-marker map-marker-${m.kind} map-marker-${m.state}`}>
+                  <circle cx={m.at.x} cy={m.at.y} r={r} style={{ strokeWidth: 3 * u }} />
+                  <text className="map-marker-glyph" x={m.at.x} y={m.at.y + (m.kind === 'turn' ? 5 : 6) * u} style={{ fontSize: (m.kind === 'turn' ? 14 : 18) * u }}>{m.glyph}</text>
+                  {m.label && (
+                    <>
+                      <rect className="map-marker-label-bg" x={lx} y={m.at.y - 15 * u} width={labelW} height={30 * u} rx={8 * u} style={{ strokeWidth: 1.5 * u }} />
+                      <text className="map-marker-label" x={lx + 10 * u} y={m.at.y + 5.5 * u} style={{ fontSize: 16 * u }}>{m.label}</text>
+                    </>
+                  )}
+                </g>
+              );
+            })}
+          </g>
+        </svg>
+        <span className="map-north" aria-hidden="true">N ↑</span>
+        <div className="map-controls">
+          <button type="button" className="map-control" onClick={() => zoom(0.7)} aria-label="Zoom in">+</button>
+          <button type="button" className="map-control" onClick={() => zoom(1.4)} aria-label="Zoom out">−</button>
+          <button type="button" className="map-control map-control-fit" onClick={() => setView(fitView())}>Fit</button>
+        </div>
+      </div>
       <figcaption className="map-caption">{caption}</figcaption>
     </figure>
   );

@@ -6,6 +6,8 @@ import {
   type Place,
   type RouteResult,
   type VisionTrigger,
+  useTypeFromText,
+  useTypeLabel,
 } from '@polyguide/shared';
 import { api } from './api';
 import { captureRoomSignFrame, releaseScreenWakeLock, requestAppPermissions, requestScreenWakeLock } from './camera';
@@ -15,7 +17,6 @@ import { configureSpeech, speak, stopSpeech } from './voice/tts';
 import { parseCommand } from './voice/commands';
 import { loadPreferences, savePreferences, type Preferences } from './storage';
 import { useGuidance } from './guidance';
-import { useTypeLabel } from './useTypes';
 import './styles.css';
 
 type Route = Extract<RouteResult, { ok: true }>;
@@ -232,9 +233,9 @@ export function App() {
   }
 
   /** Server errors are announced, never replaced by stale or fake results. */
-  async function fetchPlaces(query: string): Promise<Place[] | null> {
+  async function fetchPlaces(query: string, near?: Place | null): Promise<Place[] | null> {
     try {
-      return await api.places(query);
+      return await api.places(query, undefined, near?.id);
     } catch {
       announce('The PolyGuide server is unavailable. Please try again.');
       return null;
@@ -272,7 +273,9 @@ export function App() {
       searchText = 'accessible toilet';
     }
     setBusy(true);
-    const found = await fetchPlaces(searchText);
+    // A room type ("seminar room") means the nearest one, like "nearest toilet".
+    const byType = Boolean(useTypeFromText(searchText));
+    const found = await fetchPlaces(searchText, nearest || byType ? origin : null);
     setBusy(false);
     if (!found) return [];
     const filtered = found.filter((place) => place.kind === 'room' || place.kind === 'poi');
@@ -282,7 +285,7 @@ export function App() {
     const exact = shown.find((place) => sameName(place, searchText));
     // Several places with the same name (toilets, elevators) can't be told apart by voice; choose by distance.
     const indistinct = shown.length > 1 && new Set(shown.map(placeLabel)).size === 1;
-    if (filtered.length && origin && !exact && (nearest || indistinct)) {
+    if (filtered.length && origin && !exact && (nearest || byType || indistinct)) {
       setBusy(true);
       const best = await quickestOf(filtered.slice(0, 8), origin);
       setBusy(false);
@@ -843,7 +846,7 @@ export function App() {
         {screen === 'preview' && route && (
           <section className="screen-panel screen-panel-wide" aria-labelledby="preview-title">
             <h1 id="preview-title">To {route.to.label ?? route.to.name}</h1>
-            <p className="lead">From {route.from.name}{route.to.label ? `, to room ${route.to.name}` : ''}.</p>
+            <p className="lead">{route.to.label ? `Room ${route.to.name}. ` : route.to.useType ? `${useTypeLabel(route.to.useType)}. ` : ''}From {route.from.name}.</p>
             <dl className="route-stats">
               <div><dt>Distance</dt><dd>{Math.round(route.totalDistanceM)} m</dd></div>
               <div><dt>Time</dt><dd>{Math.max(1, Math.round(route.totalDurationS / 60))} min</dd></div>
@@ -909,6 +912,12 @@ export function App() {
               <button className="button button-nav" type="button" onClick={() => guidance.whereAmI()}>Where am I?</button>
               <button className="button button-nav button-stop" type="button" onClick={() => { guidance.stop(); releaseScreenWakeLock(); setScreen('preview'); }}>Stop</button>
             </div>
+            {guidance.currentStep && (
+              <details className="nav-map" open={!preferences.settings.voiceFirst}>
+                <summary>Map of floor {guidance.currentStep.levelId.split('.').at(-1)}</summary>
+                <RouteMap route={route} levelId={guidance.currentStep.levelId} activeStepIndex={guidance.stepIndex} compact />
+              </details>
+            )}
             {cameraGranted && (
               <div className="camera-card">
                 {cameraFramePreview && <img className="camera-preview" src={cameraFramePreview} alt="" />}

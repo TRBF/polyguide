@@ -129,9 +129,11 @@ export const api = {
   },
 
   /** Throws when the server is unreachable; callers show an error instead of stale/fake places. */
-  async places(query = '', kind?: Place['kind']): Promise<Place[]> {
+  /** `near`: a place id; results are then ordered by distance from it. */
+  async places(query = '', kind?: Place['kind'], near?: string): Promise<Place[]> {
     const search = new URLSearchParams({ q: query, limit: '30' });
     if (kind) search.set('kind', kind);
+    if (near) search.set('near', near);
     return getJson<Place[]>(`${API.places}?${search}`);
   },
 

@@ -77,10 +77,15 @@ apiRoutes.get('/places', (c) => {
   const limit = Math.min(50, Math.max(1, Number(c.req.query('limit') ?? 10) || 10));
   const kindQ = c.req.query('kind');
   const kind = PLACE_KINDS.find((k) => k === kindQ) as PlaceKind | undefined;
-  return c.json(searchPlaces(q, limit, kind));
+  return c.json(searchPlaces(q, limit, kind, c.req.query('near') || undefined));
 });
 
-apiRoutes.get('/map/:levelId', (c) => c.json(getMapLayer(c.req.param('levelId'))));
+// Default: room outlines only (what the app draws, ~5x smaller). ?layers=all adds pathways and place points.
+apiRoutes.get('/map/:levelId', (c) => {
+  const layer = getMapLayer(c.req.param('levelId'));
+  if (c.req.query('layers') === 'all') return c.json(layer);
+  return c.json({ ...layer, features: layer.features.filter((f) => f.properties.layer === 'room') });
+});
 
 apiRoutes.post('/route', async (c) => {
   const parsed = routeSchema.safeParse(await c.req.json().catch(() => null));

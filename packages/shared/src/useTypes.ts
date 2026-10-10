@@ -1,5 +1,5 @@
 /** ETH room types (German, from PolyMaps) in plain English for display and speech. Unknown types pass through. */
-const USE_TYPES: Record<string, string> = {
+export const USE_TYPES: Record<string, string> = {
   'Büro': 'Office',
   'Aufzug': 'Elevator',
   'WC Herren': "Men's toilet",
@@ -35,3 +35,9 @@ const USE_TYPES: Record<string, string> = {
 };
 
 export const useTypeLabel = (useType: string | undefined): string | undefined => (useType ? USE_TYPES[useType] ?? useType : undefined);
+
+/** "seminar room", "a lecture hall", "the library" → the German ETH type it names, or undefined. */
+export function useTypeFromText(text: string): string | undefined {
+  const t = text.trim().toLowerCase().replace(/^(a|an|the|any|nearest|closest)\s+/, '').replace(/s$/, '');
+  return Object.keys(USE_TYPES).find((de) => USE_TYPES[de].toLowerCase() === t || de.toLowerCase() === t);
+}

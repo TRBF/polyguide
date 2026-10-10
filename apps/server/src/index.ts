@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { logger } from 'hono/logger';
 import { bodyLimit } from 'hono/body-limit';
+import { compress } from 'hono/compress';
 import { aiRoutes } from './ai';
 import { loadGraph } from './graphStore';
 import { mockRoutes } from './mock';
@@ -14,6 +15,8 @@ const USE_MOCK = process.env.USE_MOCK === '1';
 
 const app = new Hono();
 app.use('*', logger());
+// Floor plans are the only large responses; gzip them for phones.
+app.use('/api/map/*', compress());
 // Frames are ~150 KB; reject anything absurd before it reaches the OpenAI call.
 app.use('/api/*', bodyLimit({ maxSize: 2 * 1024 * 1024, onError: (c) => c.json({ ok: false, reason: 'invalid_request', message: 'Request too large.' }, 413) }));
 

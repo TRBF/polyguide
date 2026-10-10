@@ -169,17 +169,44 @@ h2 { font-size: var(--s-2); line-height: 1.25; }
 .step-list small { color: var(--muted); font-size: var(--s-1); }
 
 /* ───────── Map (stays light in both themes, like a printed floor plan) ───────── */
-.map-figure { margin: 0; overflow: hidden; border: 1px solid var(--rule); border-radius: var(--radius); background: #eef0ec; }
-.route-map { display: block; width: 100%; height: auto; aspect-ratio: 3 / 2; background: #eef0ec; }
-.map-background { fill: #eef0ec; }
-.map-room { fill: #ffffff; stroke: #8d969e; stroke-width: 1; vector-effect: non-scaling-stroke; }
-.map-pathway { fill: none; stroke: #b7bec4; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-.map-place-dot { fill: #1b1f24; stroke: #fff; stroke-width: 2; vector-effect: non-scaling-stroke; }
-.map-place-label { fill: #1b1f24; font: 700 16px 'Atkinson Hyperlegible', system-ui, sans-serif; paint-order: stroke; stroke: #ffffff; stroke-width: 4px; stroke-linejoin: round; }
-.map-route-outline { fill: none; stroke: #ffffff; stroke-width: 12; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.map-route-line { fill: none; stroke: #215caf; stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.map-figure { margin: 0; overflow: hidden; border: 1px solid var(--rule); border-radius: var(--radius); background: #f4f5f2; }
+.map-stage { position: relative; }
+.route-map { display: block; width: 100%; height: auto; aspect-ratio: 3 / 2; background: #f4f5f2; cursor: grab; touch-action: pan-y; user-select: none; }
+.route-map:active { cursor: grabbing; }
+.map-figure-compact .route-map { aspect-ratio: 16 / 9; }
+.map-background { fill: #f4f5f2; }
+.map-room { fill: #ffffff; stroke: #9aa3ab; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.map-room-destination { fill: #ffe680; stroke: #1b1f24; stroke-width: 2; }
+.map-route-outline { fill: none; stroke: #ffffff; stroke-linecap: round; stroke-linejoin: round; }
+.map-route-line { fill: none; stroke: #215caf; stroke-linecap: round; stroke-linejoin: round; }
+.map-leg-done .map-route-line { stroke: #8d969e; }
+.map-leg-current .map-route-line { stroke: #215caf; }
+.map-room-label { fill: #3d4650; font-family: 'Atkinson Hyperlegible', system-ui, sans-serif; font-weight: 700; text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: #ffffff; stroke-linejoin: round; pointer-events: none; }
+.map-room-label-destination { fill: #1b1f24; }
+.map-marker circle { stroke: #ffffff; }
+.map-marker-start circle { fill: #1e7a46; }
+.map-marker-turn circle { fill: #ffffff; stroke: #215caf; }
+.map-marker-turn .map-marker-glyph { fill: #215caf; }
+.map-marker-transfer circle { fill: #215caf; }
+.map-marker-end circle { fill: #1b1f24; }
+.map-marker-done circle { fill: #8d969e; stroke: #ffffff; }
+.map-marker-done .map-marker-glyph { fill: #ffffff; }
+.map-marker-glyph { fill: #ffffff; font-family: 'Atkinson Hyperlegible', system-ui, sans-serif; font-weight: 700; text-anchor: middle; pointer-events: none; }
+.map-marker-label-bg { fill: #ffffff; stroke: #1b1f24; }
+.map-marker-label { fill: #1b1f24; font-family: 'Atkinson Hyperlegible', system-ui, sans-serif; font-weight: 700; pointer-events: none; }
+.map-north { position: absolute; top: 10px; left: 10px; padding: 4px 8px; border-radius: 6px; background: #ffffff; color: #1b1f24; font-size: 14px; font-weight: 700; box-shadow: 0 0 0 1px #c9cec9; }
+.map-controls { position: absolute; top: 10px; right: 10px; display: flex; flex-direction: column; gap: 6px; }
+.map-control { min-width: 44px; min-height: 44px; padding: 0 10px; border: 1px solid #9aa3ab; border-radius: 8px; background: #ffffff; color: #1b1f24; font-size: 20px; font-weight: 700; }
+.map-control-fit { font-size: 15px; }
+.map-control:hover { border-color: #215caf; }
 .map-caption { padding: 10px 14px; border-top: 1px solid #c9cec9; color: #3d4650; font-size: var(--s-1); }
 .map-note { margin: 0; padding: 10px 14px; background: var(--signal); color: var(--signal-ink); font-weight: 700; }
+.floor-tabs { display: flex; gap: 6px; }
+.floor-tab { min-width: 92px; min-height: 48px; padding: 6px 14px; border: 2px solid var(--sign); border-radius: var(--radius); background: var(--paper); color: var(--link); font-weight: 700; }
+.floor-tab[aria-pressed='true'] { background: var(--sign); color: var(--sign-ink); }
+.nav-map { margin-top: var(--s-2); }
+.nav-map summary { min-height: 48px; display: flex; align-items: center; color: var(--link); font-weight: 700; cursor: pointer; }
+.nav-map[open] summary { margin-bottom: 8px; }
 
 /* ───────── Navigate: the sign ───────── */
 .navigate-heading-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
@@ -206,19 +233,6 @@ progress { display: block; width: 100%; height: 10px; margin: var(--s-1) 0 6px; 
 .camera-card p { flex: 1; margin: 0; color: var(--muted); font-size: var(--s-1); }
 .camera-card .button { flex: 0 0 auto; min-height: 52px; }
 .camera-preview { width: 56px; height: 56px; flex: 0 0 auto; border-radius: 8px; object-fit: cover; }
-
-/* Map markers: start, transfers and destination are the only labelled points. */
-.map-room-destination { fill: #ffe680; stroke: #1b1f24; stroke-width: 2; }
-.map-marker circle { stroke: #ffffff; stroke-width: 5; vector-effect: non-scaling-stroke; }
-.map-marker-start circle { fill: #1e7a46; }
-.map-marker-transfer circle { fill: #215caf; }
-.map-marker-end circle { fill: #1b1f24; }
-.map-marker-glyph { fill: #ffffff; font: 700 22px 'Atkinson Hyperlegible', system-ui, sans-serif; text-anchor: middle; }
-.map-marker-label-bg { fill: #ffffff; stroke: #1b1f24; stroke-width: 2; vector-effect: non-scaling-stroke; }
-.map-marker-label { fill: #1b1f24; font: 700 22px 'Atkinson Hyperlegible', system-ui, sans-serif; }
-.floor-tabs { display: flex; gap: 6px; }
-.floor-tab { min-width: 92px; min-height: 48px; padding: 6px 14px; border: 2px solid var(--sign); border-radius: var(--radius); background: var(--paper); color: var(--link); font-weight: 700; }
-.floor-tab[aria-pressed='true'] { background: var(--sign); color: var(--sign-ink); }
 
 /* ───────── Arrived ───────── */
 .arrival-sign { background: #1e7a46; } /* fixed green: white text stays 5.3:1 in both themes */
