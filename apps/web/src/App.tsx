@@ -15,6 +15,7 @@ import { configureSpeech, speak, stopSpeech } from './voice/tts';
 import { parseCommand } from './voice/commands';
 import { loadPreferences, savePreferences, type Preferences } from './storage';
 import { useGuidance } from './guidance';
+import { useTypeLabel } from './useTypes';
 import './styles.css';
 
 type Route = Extract<RouteResult, { ok: true }>;
@@ -815,7 +816,7 @@ export function App() {
             {destinationMatches.length > 0 && (
               <div className="results-block" aria-label="Destination results">
                 <h2>{destinationMatches.length > 1 ? `Choose one of ${destinationMatches.length} matches` : 'Choose destination'}</h2>
-                <ul className="result-list">{destinationMatches.map((place, index) => <li key={place.id}><button className="result-button" type="button" onClick={() => void createRoute(place)}><span className="result-number">{index + 1}</span><span>{placeLabel(place)}{place.useType && <small>{place.useType}</small>}</span></button></li>)}</ul>
+                <ul className="result-list">{destinationMatches.map((place, index) => <li key={place.id}><button className="result-button" type="button" onClick={() => void createRoute(place)}><span className="result-number">{index + 1}</span><span>{placeLabel(place)}{place.useType && <small>{useTypeLabel(place.useType)}</small>}</span></button></li>)}</ul>
               </div>
             )}
             <div className="quick-destinations">
@@ -846,11 +847,15 @@ export function App() {
             <section className="floor-map-panel" aria-labelledby="floor-map-title">
               <div className="section-heading-row">
                 <h2 id="floor-map-title">Floor map</h2>
-                <label className="floor-picker">Show floor
-                  <select value={selectedLevel} onChange={(event) => setSelectedLevel(event.target.value)}>
-                    {route.levels.map((level) => <option value={level} key={level}>Floor {level.split('.').at(-1) ?? level}</option>)}
-                  </select>
-                </label>
+                {route.levels.length > 1 && (
+                  <div className="floor-tabs" role="group" aria-label="Show floor">
+                    {route.levels.map((level) => (
+                      <button key={level} type="button" className="floor-tab" aria-pressed={(selectedLevel || route.levels[0]) === level} onClick={() => setSelectedLevel(level)}>
+                        Floor {level.split('.').at(-1) ?? level}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <RouteMap route={route} levelId={selectedLevel || route.levels[0]} />
             </section>
@@ -912,18 +917,29 @@ export function App() {
           </section>
         )}
 
-        {screen === 'arrived' && (
-          <section className="screen-panel arrival-panel" aria-labelledby="arrived-title">
-            <div className="arrival-mark" aria-hidden="true">✓</div>
-            <h1 id="arrived-title">You’ve arrived</h1>
-            <p className="lead">{destination?.name ?? route?.to.name ?? 'Your destination'}{(() => {
-              const side = route?.steps.at(-1)?.side;
-              return side === 'left' || side === 'right' ? ` is on your ${side}.` : side === 'ahead' ? ' is ahead of you.' : '.';
-            })()}</p>
-            <p>Keep your cane or guide dog with you. PolyGuide does not detect obstacles.</p>
-            <div className="screen-actions"><button className="button button-primary" type="button" onClick={startNewDestination}>Choose a new destination</button></div>
-          </section>
-        )}
+        {screen === 'arrived' && (() => {
+          const side = route?.steps.at(-1)?.side;
+          const target = destination ?? route?.to ?? null;
+          const where = side === 'left' ? 'on your left' : side === 'right' ? 'on your right' : 'ahead of you';
+          const backTo = route && 'id' in route.from ? route.from : null;
+          return (
+            <section className="screen-panel arrival-panel" aria-labelledby="arrived-title">
+              <div className="sign-panel arrival-sign">
+                <span className="sign-arrow" aria-hidden="true">{side === 'left' ? '←' : side === 'right' ? '→' : '↑'}</span>
+                <div className="sign-copy">
+                  <h1 id="arrived-title" className="current-instruction">You have arrived</h1>
+                  <p className="sign-distance">{target ? `${target.label ?? target.name} is ${where}.` : `Your destination is ${where}.`}</p>
+                </div>
+              </div>
+              {target?.label && <p className="lead">Room {target.name}{target.useType ? `, ${useTypeLabel(target.useType)?.toLowerCase()}` : ''}.</p>}
+              <p className="arrival-note">Keep your cane or guide dog with you. PolyGuide does not detect obstacles.</p>
+              <div className="arrival-actions">
+                <button className="button button-primary" type="button" onClick={startNewDestination}>Choose a new destination</button>
+                {backTo && <button className="button button-secondary" type="button" onClick={() => void createRoute(backTo, route!.to)}>Route back to {backTo.label ?? backTo.name}</button>}
+              </div>
+            </section>
+          );
+        })()}
 
         {screen === 'settings' && (
           <section className="screen-panel" aria-labelledby="settings-title">

@@ -165,12 +165,12 @@ h2 { font-size: var(--s-2); line-height: 1.25; }
 
 /* ───────── Map (stays light in both themes, like a printed floor plan) ───────── */
 .map-figure { margin: 0; overflow: hidden; border: 1px solid var(--rule); border-radius: var(--radius); background: #eef0ec; }
-.route-map { display: block; width: 100%; height: 360px; background: #eef0ec; }
+.route-map { display: block; width: 100%; height: auto; aspect-ratio: 3 / 2; background: #eef0ec; }
 .map-background { fill: #eef0ec; }
 .map-room { fill: #ffffff; stroke: #8d969e; stroke-width: 1; vector-effect: non-scaling-stroke; }
 .map-pathway { fill: none; stroke: #b7bec4; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .map-place-dot { fill: #1b1f24; stroke: #fff; stroke-width: 2; vector-effect: non-scaling-stroke; }
-.map-place-label { fill: #1b1f24; font: 700 22px 'Atkinson Hyperlegible', system-ui, sans-serif; paint-order: stroke; stroke: #ffffff; stroke-width: 4px; stroke-linejoin: round; }
+.map-place-label { fill: #1b1f24; font: 700 16px 'Atkinson Hyperlegible', system-ui, sans-serif; paint-order: stroke; stroke: #ffffff; stroke-width: 4px; stroke-linejoin: round; }
 .map-route-outline { fill: none; stroke: #ffffff; stroke-width: 12; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .map-route-line { fill: none; stroke: #215caf; stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .map-caption { padding: 10px 14px; border-top: 1px solid #c9cec9; color: #3d4650; font-size: var(--s-1); }
@@ -208,10 +208,24 @@ progress { display: block; width: 100%; height: 10px; margin: var(--s-1) 0 6px; 
 /* Legacy compass card (kept for screens that still render it). */
 .compass-card { display: none; }
 
+/* Map markers: start, transfers and destination are the only labelled points. */
+.map-room-destination { fill: #ffe680; stroke: #1b1f24; stroke-width: 2; }
+.map-marker circle { stroke: #ffffff; stroke-width: 5; vector-effect: non-scaling-stroke; }
+.map-marker-start circle { fill: #1e7a46; }
+.map-marker-transfer circle { fill: #215caf; }
+.map-marker-end circle { fill: #1b1f24; }
+.map-marker-glyph { fill: #ffffff; font: 700 22px 'Atkinson Hyperlegible', system-ui, sans-serif; text-anchor: middle; }
+.map-marker-label-bg { fill: #ffffff; stroke: #1b1f24; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.map-marker-label { fill: #1b1f24; font: 700 22px 'Atkinson Hyperlegible', system-ui, sans-serif; }
+.floor-tabs { display: flex; gap: 6px; }
+.floor-tab { min-width: 92px; min-height: 48px; padding: 6px 14px; border: 2px solid var(--sign); border-radius: var(--radius); background: var(--paper); color: var(--link); font-weight: 700; }
+.floor-tab[aria-pressed='true'] { background: var(--sign); color: var(--sign-ink); }
+
 /* ───────── Arrived ───────── */
-.arrival-panel { text-align: left; }
-.arrival-mark { width: 72px; height: 72px; display: grid; place-items: center; margin: 0 0 var(--s-2); border-radius: 50%; background: var(--done); color: #fff; font-size: 40px; font-weight: 700; }
-.arrival-panel .lead { color: var(--ink); font-size: var(--s-3); line-height: 1.2; }
+.arrival-sign { background: #1e7a46; } /* fixed green: white text stays 5.3:1 in both themes */
+.arrival-panel .lead { margin: var(--s-2) 0 0; color: var(--ink); }
+.arrival-note { margin: var(--s-2) 0 0; padding: 12px 16px; border-radius: var(--radius); background: var(--signal); color: var(--signal-ink); }
+.arrival-actions { display: grid; gap: 10px; margin-top: var(--s-3); }
 
 /* ───────── Voice bar ───────── */
 .app-footer { position: sticky; z-index: 20; bottom: 0; display: flex; align-items: center; gap: 12px; padding: 10px clamp(16px, 4vw, 48px) calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--rule); background: var(--paper); }
@@ -240,7 +254,6 @@ progress { display: block; width: 100%; height: 10px; margin: var(--s-1) 0 6px; 
   .lead { font-size: 18px; margin-bottom: var(--s-2); }
   .search-row { flex-direction: column; }
   .route-stats dd { font-size: 22px; }
-  .route-map { height: 280px; }
   .sticky-actions { bottom: 118px; }
   .sign-panel { gap: 14px; padding: 16px; }
   .sign-arrow { width: 72px; height: 72px; font-size: 48px; }

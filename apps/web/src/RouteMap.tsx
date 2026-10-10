@@ -18,9 +18,10 @@ interface ProjectedPoint {
   y: number;
 }
 
-const viewWidth = 1000;
-const viewHeight = 600;
-const padding = 48;
+// Drawing units ≈ CSS px on a phone (the SVG renders ~350–600 px wide), so marker text stays legible.
+const viewWidth = 600;
+const viewHeight = 400;
+const padding = 40;
 /** Metres of context shown around the route. */
 const ROUTE_MARGIN_M = 25;
 
@@ -48,14 +49,15 @@ function mapLabel(feature: MapFeature): string {
   return typeof candidate === 'string' ? candidate : '';
 }
 
-function mapFeature(feature: MapFeature, project: (position: Position) => ProjectedPoint, key: string) {
+function mapFeature(feature: MapFeature, project: (position: Position) => ProjectedPoint, key: string, destinationId: string) {
   const geometry = feature.geometry;
   if (!geometry) return null;
+  // Other places stay quiet (small unlabelled dots); only the route's own points get labels.
   if (geometry.type === 'Point' && isPosition(geometry.coordinates)) {
     const point = project(geometry.coordinates);
-    const label = mapLabel(feature);
-    return <g key={key}><circle className="map-place-dot" cx={point.x} cy={point.y} r="6" /><title>{label || 'Place on this floor'}</title>{label && <text className="map-place-label" x={point.x + 9} y={point.y - 8}>{label}</text>}</g>;
+    return <circle key={key} className="map-place-dot" cx={point.x} cy={point.y} r="5"><title>{mapLabel(feature) || 'Place on this floor'}</title></circle>;
   }
+  const roomClass = feature.properties?.placeId === destinationId ? 'map-room map-room-destination' : 'map-room';
   if (geometry.type === 'LineString') {
     const points = coordinates(geometry.coordinates).map(project);
     if (points.length < 2) return null;
@@ -70,17 +72,46 @@ function mapFeature(feature: MapFeature, project: (position: Position) => Projec
   if (geometry.type === 'Polygon') {
     const [outer] = polygonRings(geometry.coordinates);
     const points = outer?.map(project) ?? [];
-    return points.length > 2 ? <polygon key={key} className="map-room" points={points.map((point) => `${point.x},${point.y}`).join(' ')}><title>{mapLabel(feature) || 'Room outline'}</title></polygon> : null;
+    return points.length > 2 ? <polygon key={key} className={roomClass} points={points.map((point) => `${point.x},${point.y}`).join(' ')}><title>{mapLabel(feature) || 'Room outline'}</title></polygon> : null;
   }
   if (geometry.type === 'MultiPolygon' && Array.isArray(geometry.coordinates)) {
     return geometry.coordinates.map((polygon, index) => {
       const [outer] = polygonRings(polygon);
       const points = outer?.map(project) ?? [];
-      return points.length > 2 ? <polygon key={`${key}-${index}`} className="map-room" points={points.map((point) => `${point.x},${point.y}`).join(' ')}><title>{mapLabel(feature) || 'Room outline'}</title></polygon> : null;
+      return points.length > 2 ? <polygon key={`${key}-${index}`} className={roomClass} points={points.map((point) => `${point.x},${point.y}`).join(' ')}><title>{mapLabel(feature) || 'Room outline'}</title></polygon> : null;
     });
   }
   return null;
 }
+
+interface Marker {
+  at: Position;
+  kind: 'start' | 'end' | 'transfer';
+  glyph: string;
+  label: string;
+}
+
+const floorOf = (levelId: string) => levelId.split('.').at(-1) ?? levelId;
+
+/** Where the route starts, ends, and changes floor — the only labelled points on the map. */
+function routeMarkers(route: Route, levelId: string): Marker[] {
+  const markers: Marker[] = [];
+  const first = route.steps[0];
+  if (first?.levelId === levelId && first.polyline[0]) markers.push({ at: first.polyline[0], kind: 'start', glyph: 'S', label: 'Start' });
+  for (const step of route.steps) {
+    if (!step.toLevelId || step.toLevelId === step.levelId) continue;
+    const what = step.maneuver === 'take_elevator' ? 'Elevator' : step.maneuver.startsWith('take_ramp') ? 'Ramp' : 'Stairs';
+    if (step.levelId === levelId && step.polyline[0]) markers.push({ at: step.polyline[0], kind: 'transfer', glyph: '↕', label: `${what} to floor ${floorOf(step.toLevelId)}` });
+    const exit = step.polyline.at(-1);
+    if (step.toLevelId === levelId && exit) markers.push({ at: exit, kind: 'transfer', glyph: '↕', label: `${what} from floor ${floorOf(step.levelId)}` });
+  }
+  const last = route.steps.at(-1);
+  if (last?.maneuver === 'arrive' && last.levelId === levelId && last.polyline[0]) markers.push({ at: last.polyline[0], kind: 'end', glyph: '●', label: route.to.label ?? route.to.name });
+  return markers;
+}
+
+/** Rough label width in viewBox units (no DOM measuring needed). */
+const labelWidth = (text: string) => text.length * 13 + 24;
 
 export function RouteMap({ route, levelId }: { route: Route; levelId: string }) {
   const [floorMap, setFloorMap] = useState<FloorMap | null>(null);
@@ -132,19 +163,40 @@ export function RouteMap({ route, levelId }: { route: Route; levelId: string }) 
     y: viewHeight - yOffset - (position[1] * 110540 - minY) * scale,
   });
 
+  const markers = routeMarkers(route, levelId);
+  const floor = floorOf(levelId);
+  const caption = routeLines.length
+    ? `Floor ${floor}. The blue line is your route${markers.length ? `; marked: ${markers.map((m) => m.label).join(', ')}` : ''}. The written steps below give the full route.`
+    : `Floor ${floor}. Your route does not walk on this floor.`;
+
   return (
     <figure className="map-figure">
       {mapError && <p className="map-note">Floor drawing is unavailable. The written route steps are still available below.</p>}
-      <svg className="route-map" viewBox={`0 0 ${viewWidth} ${viewHeight}`} role="img" aria-label={`Indoor map for floor ${levelId.split('.').at(-1) ?? levelId}. Route is highlighted with a thick line.`}>
+      <svg className="route-map" viewBox={`0 0 ${viewWidth} ${viewHeight}`} role="img" aria-label={caption}>
         <rect className="map-background" x="0" y="0" width={viewWidth} height={viewHeight} />
         <clipPath id="map-clip"><rect x="0" y="0" width={viewWidth} height={viewHeight} /></clipPath>
-        <g clipPath="url(#map-clip)">{features.map((feature, index) => mapFeature(feature, project, String(feature.id ?? index)))}</g>
+        <g clipPath="url(#map-clip)">{features.map((feature, index) => mapFeature(feature, project, String(feature.id ?? index), route.to.id))}</g>
         {routeLines.map((line, index) => {
           const points = line.map(project).map((point) => `${point.x},${point.y}`).join(' ');
           return <g key={`route-${index}`}><polyline className="map-route-outline" points={points} /><polyline className="map-route-line" points={points} /></g>;
         })}
+        {markers.map((marker, index) => {
+          const point = project(marker.at);
+          const width = labelWidth(marker.label);
+          // Keep labels inside the frame: flip to the left near the right edge.
+          const left = point.x + 28 + width > viewWidth;
+          const x = left ? point.x - 28 - width : point.x + 28;
+          return (
+            <g key={`marker-${index}`} className={`map-marker map-marker-${marker.kind}`}>
+              <circle cx={point.x} cy={point.y} r="20" />
+              <text className="map-marker-glyph" x={point.x} y={point.y + 8}>{marker.glyph}</text>
+              <rect className="map-marker-label-bg" x={x} y={point.y - 20} width={width} height="40" rx="10" />
+              <text className="map-marker-label" x={x + 12} y={point.y + 8}>{marker.label}</text>
+            </g>
+          );
+        })}
       </svg>
-      <figcaption className="map-caption">Floor {levelId.split('.').at(-1) ?? levelId}. The written steps below provide the full route without relying on the map.</figcaption>
+      <figcaption className="map-caption">{caption}</figcaption>
     </figure>
   );
 }
