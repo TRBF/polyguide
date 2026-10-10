@@ -19,31 +19,33 @@ const ROOM_MATCH_MIN = 0.6;
 const NEAR_ROUTE_M = 15;
 
 const needSchema = z.enum(['wheelchair', 'blind', 'lowVision', 'lowStamina', 'avoidCrowds']);
+// Every string is capped: whatever a client sends here becomes paid prompt tokens.
+const shortText = z.string().max(80);
 const landmarkSchema = z.object({
-  label: z.string(),
+  label: shortText,
   kind: z.enum(['room_sign', 'elevator', 'stairs', 'entrance', 'poi', 'other']),
   side: z.enum(['left', 'right', 'ahead']).optional(),
   atDistanceM: z.number(),
-  placeId: z.string().optional(),
+  placeId: shortText.optional(),
 });
 const requestSchema = z.object({
-  imageJpegBase64: z.string().min(100).max(MAX_IMAGE_CHARS),
+  imageJpegBase64: z.string().min(100).max(MAX_IMAGE_CHARS).regex(/^[A-Za-z0-9+/]+={0,2}$/, 'not base64'),
   trigger: z.enum(['approaching_node', 'off_heading', 'user_query', 'periodic', 'localize']),
-  routeId: z.string().optional(),
-  stepIndex: z.number().int().optional(),
+  routeId: shortText.optional(),
+  stepIndex: z.number().int().min(0).max(1000).optional(),
   step: z
     .object({
-      text: z.string(),
-      maneuver: z.string(),
-      levelId: z.string(),
-      toLevelId: z.string().optional(),
+      text: z.string().max(300),
+      maneuver: shortText,
+      levelId: shortText,
+      toLevelId: shortText.optional(),
       expectedLandmarks: z.array(landmarkSchema).max(30),
       distanceM: z.number(),
     })
     .optional(),
-  nextStepText: z.string().max(500).optional(),
+  nextStepText: z.string().max(300).optional(),
   headingDeltaDeg: z.number().nullable().optional(),
-  needs: z.array(needSchema).default([]),
+  needs: z.array(needSchema).max(5).default([]),
   userQuestion: z.string().max(500).optional(),
   language: z.enum(['en', 'de']).optional(),
 });
@@ -123,6 +125,8 @@ visionRoutes.post('/vision/check', async (c) => {
           ],
           text: { format: { type: 'json_schema', name: 'vision_result', schema: VISION_JSON_SCHEMA, strict: true } },
           reasoning: reasoningEffort(),
+          // A bounded answer (includes reasoning tokens): caps the cost of any single request.
+          max_output_tokens: 1200,
           store: false,
         },
         { signal },

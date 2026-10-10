@@ -120,6 +120,7 @@ intentRoutes.post('/intent', async (c) => {
           input: `Screen: ${screen}\nLanguage: ${language ?? 'en'}\nUser said: "${utterance.trim()}"`,
           text: { format: { type: 'json_schema', name: 'intent', schema: INTENT_JSON_SCHEMA, strict: true } },
           reasoning: reasoningEffort(),
+          max_output_tokens: 500,
           store: false,
         },
         { signal },

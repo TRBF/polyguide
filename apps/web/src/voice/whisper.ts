@@ -13,8 +13,11 @@ const SILENCE_MS = 1400;
 const MAX_COMMAND_MS = 12_000;
 /** Push-to-talk gives up when nothing is said. */
 const NO_SPEECH_MS = 8000;
-/** Hands-free: throw away a recording that stayed silent this long and start a fresh one. */
-const IDLE_RESTART_MS = 15_000;
+/**
+ * Hands-free: throw away a recording that stayed silent this long and start a fresh one. Short, so an upload
+ * holds the command plus at most a couple of seconds before it, not earlier hallway chatter.
+ */
+const IDLE_RESTART_MS = 2500;
 const MIN_LEVEL = 0.015;
 
 let sharedContext: AudioContext | null = null;

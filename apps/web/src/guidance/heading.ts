@@ -2,20 +2,13 @@
  * Heading cue (SPEC §5.4): rate-limited spoken phrases, a stereo audio beacon and Android haptics.
  * delta = normalize180(step bearing − phone heading); positive means the route is to the right.
  */
+import { buzz } from './haptics';
 
 export const normalize180 = (d: number) => {
   const r = ((((d + 180) % 360) + 360) % 360) - 180;
   return r === -180 ? 180 : r;
 };
 export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-
-/** navigator.vibrate, but only after the first tap: before that, browsers block it and log an error. */
-export function buzz(pattern: number | number[]): void {
-  if (typeof navigator === 'undefined' || !('vibrate' in navigator)) return;
-  const activation = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation;
-  if (activation && !activation.hasBeenActive) return;
-  try { navigator.vibrate(pattern); } catch { /* unsupported */ }
-}
 
 export function headingDelta(bearingDeg: number | null | undefined, headingDeg: number | null | undefined): number | null {
   if (bearingDeg == null || headingDeg == null) return null;

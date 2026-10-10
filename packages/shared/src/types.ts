@@ -446,6 +446,8 @@ export interface GuidanceActions {
   repeat(): void;
   whereAmI(): void;
   whatsAhead(): void;
+  /** Camera check for the current step (no-op unless navigating). */
+  checkStep(): void;
   setBeaconEnabled(on: boolean): void;
 }
 

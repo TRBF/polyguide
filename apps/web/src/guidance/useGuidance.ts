@@ -180,6 +180,13 @@ export class GuidanceEngine {
     this.requestVision('user_query', 'What is ahead of me?');
   };
 
+  /** A camera check at the start of each step; goes through the same single-flight queue as every other check. */
+  checkStep = () => {
+    const t = this.snap.tracker;
+    if (t.phase !== 'navigating' && t.phase !== 'approaching') return;
+    this.requestVision('approaching_node');
+  };
+
   setBeaconEnabled = (on: boolean) => {
     this.setBeaconWanted(on);
     this.speak(on ? 'Audio beacon on.' : 'Audio beacon off.', 'info');
@@ -453,6 +460,7 @@ export const useGuidance: UseGuidance = (route, profile, options): GuidanceState
     repeat: engine.repeat,
     whereAmI: engine.whereAmI,
     whatsAhead: engine.whatsAhead,
+    checkStep: engine.checkStep,
     setBeaconEnabled: engine.setBeaconEnabled,
   };
 };

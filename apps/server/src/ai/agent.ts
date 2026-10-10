@@ -11,8 +11,10 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { USE_TYPES, useTypeFromText, type AgentAction, type AgentRequest, type AgentResponse, type Need, type Place } from '@polyguide/shared';
-import { getGraph, getPlace, matchPlaces, normRoom, searchPlaces } from '../graphStore';
+import { planRoute } from '@polyguide/routing';
+import { getGraph, getPlace, getProfileOptions, matchPlaces, normRoom, searchPlaces } from '../graphStore';
 import { classifyError, describeError, getOpenAI, reasoningEffort, textModel, withTimeout } from './openai';
+import { sanitizeUtterance } from './visionPrompt';
 
 const TIMEOUT_MS = 6000;
 const MAIN_ENTRANCE = 'pl_lm_137';
@@ -20,13 +22,26 @@ const MAIN_ENTRANCE = 'pl_lm_137';
 const ACTIONS = ['set_trip', 'confirm', 'reject', 'choose_option', 'set_needs', 'start', 'next', 'back', 'repeat', 'stop', 'where_am_i', 'whats_ahead', 'emergency', 'elevator_broken', 'slower', 'faster', 'settings', 'help', 'none'] as const satisfies readonly AgentAction[];
 const NEEDS = ['wheelchair', 'blind', 'lowVision', 'avoidStairs'] as const;
 
+/** A place the client already knows: ids and names are short, and only the id is trusted (names are re-read). */
+const placeRef = z.object({ id: z.string().min(1).max(80), name: z.string().max(80) });
+/** What the model may hand back as a place name; longer text is not a place and is never echoed. */
+const MAX_PLACE_TEXT = 60;
+const MAX_REPLY_CHARS = 200;
+
+/** A place name the model extracted, or null when it does not look like one (too long, odd characters). */
+export function placeText(text: string | null): string | null {
+  const t = text?.replace(/\s+/g, ' ').trim();
+  if (!t || t.length > MAX_PLACE_TEXT || !/^[\p{L}\p{N} .,'’()&/-]+$/u.test(t)) return null;
+  return t;
+}
+
 const requestSchema = z.object({
   utterance: z.string().min(1).max(500),
   context: z.object({
     phase: z.enum(['trip', 'confirm', 'ready', 'navigate', 'arrived']),
-    from: z.object({ id: z.string(), name: z.string() }).optional(),
-    to: z.object({ id: z.string(), name: z.string() }).optional(),
-    options: z.array(z.object({ id: z.string(), name: z.string() })).max(8).optional(),
+    from: placeRef.optional(),
+    to: placeRef.optional(),
+    options: z.array(placeRef).max(8).optional(),
     needs: z.array(z.enum(['wheelchair', 'blind', 'lowVision', 'lowStamina', 'avoidCrowds'])).default([]),
     avoidStairs: z.boolean().optional(),
     step: z.string().max(300).optional(),
@@ -109,7 +124,7 @@ interface Resolved {
 const spoken = (p: Place) => (p.kind === 'entrance' && p.label ? p.label : p.label && p.kind === 'room' ? `${p.name}, the ${p.label}` : p.name);
 
 /** "nearest toilet", "a seminar room", "exit", "Audimax", "HG F 7" → a place, or options when ambiguous. */
-export function resolvePlace(text: string, near: Place | undefined, needs: string[]): Resolved {
+export function resolvePlace(text: string, near: Place | undefined, needs: string[], avoidStairs = false): Resolved {
   let q = text.trim().replace(/^(?:the|a|an|room)\s+/i, '').replace(/^(?:nearest|closest)\s+/i, '');
   const wantsNearest = /^(?:the\s+)?(?:nearest|closest)\s/i.test(text.trim()) || /^(?:a|an|any)\s/i.test(text.trim());
   const g = getGraph();
@@ -118,13 +133,13 @@ export function resolvePlace(text: string, near: Place | undefined, needs: strin
   if (/^(?:exit|way out|main exit|building exit)$/i.test(q)) {
     const entrances = g.places.filter((p) => p.kind === 'entrance' && p.nodeId !== near?.nodeId);
     const sorted = ref ? entrances.sort((a, b) => dist(ref, a) - dist(ref, b)) : entrances;
-    return { place: sorted[0] };
+    return { place: quickestReachable(near, sorted, needs, avoidStairs) };
   }
   if (needs.includes('wheelchair') && /\b(?:toilet|bathroom|restroom|wc|loo)\b/i.test(q) && !/accessible/i.test(q)) q = 'accessible toilet';
   const generic = wantsNearest || Boolean(useTypeFromText(q)) || /\b(?:toilet|bathroom|restroom|wc|elevator|lift|cafe|cafeteria|food|library|printer|printing|lounge|cloakroom|entrance)\b/i.test(q);
   if (generic) {
     const found = searchPlaces(q, 8, undefined, ref?.id).filter((p) => p.nodeId !== near?.nodeId);
-    return { place: found[0] };
+    return { place: quickestReachable(near, found, needs, avoidStairs) };
   }
   // A room code or a name.
   const exact = g.places.find((p) => p.kind === 'room' && (normRoom(p.name) === normRoom(q) || normRoom(p.name) === `HG${normRoom(q)}`));
@@ -134,6 +149,26 @@ export function resolvePlace(text: string, near: Place | undefined, needs: strin
   const [best, second] = matches;
   if (best.confidence >= 0.9 || (best.confidence >= 0.6 && (!second || best.confidence - second.confidence >= 0.2))) return { place: best.place };
   return { options: matches.slice(0, 4).map((m) => m.place) };
+}
+
+/**
+ * "Nearest" by the user's own route, not a straight line: of the few closest candidates, the one with the
+ * quickest route for their profile (a wheelchair user must not be sent to an entrance with steps). Falls back
+ * to the closest when the start is unknown or no candidate has a route.
+ */
+function quickestReachable(near: Place | undefined, candidates: Place[], needs: string[], avoidStairs: boolean): Place | undefined {
+  if (!near || candidates.length < 2) return candidates[0];
+  const profile = { needs: needs as Need[], avoidStairs };
+  let best: { place: Place; seconds: number } | undefined;
+  for (const place of candidates.slice(0, 4)) {
+    try {
+      const r = planRoute(getGraph(), { routeId: 'probe', from: near, to: place, profile, options: getProfileOptions() });
+      if (r.ok && (!best || r.totalDurationS < best.seconds)) best = { place, seconds: r.totalDurationS };
+    } catch {
+      /* unreachable candidate */
+    }
+  }
+  return best?.place ?? candidates[0];
 }
 
 function dist(a: Place, b: Place): number {
@@ -164,14 +199,17 @@ agentRoutes.post('/agent', async (c) => {
   const openai = getOpenAI();
   if (!openai) return c.json<AgentResponse>({ ok: false, reason: 'disabled', message: 'The voice agent needs an OpenAI key on the server.' });
   const ctx = req.context;
+  // Place names come from the graph by id, never from the client, so they cannot carry instructions.
+  const nameOf = (ref?: { id: string; name: string }) => (ref ? getPlace(ref.id)?.name ?? 'unknown' : 'unknown');
   const userText = [
     `Phase: ${ctx.phase}`,
-    `From: ${ctx.from?.name ?? 'unknown'}`,
-    `To: ${ctx.to?.name ?? 'unknown'}`,
-    ctx.options?.length ? `Options read out: ${ctx.options.map((o, i) => `${i + 1}. ${o.name}`).join('; ')}` : '',
+    `From: ${nameOf(ctx.from)}`,
+    `To: ${nameOf(ctx.to)}`,
+    ctx.options?.length ? `Options read out: ${ctx.options.map((o, i) => `${i + 1}. ${nameOf(o)}`).join('; ')}` : '',
     `Needs: ${[...ctx.needs, ...(ctx.avoidStairs ? ['avoidStairs'] : [])].join(', ') || 'none'}`,
-    ctx.step ? `Current instruction: ${ctx.step}` : '',
-    `User said: "${req.utterance.trim()}"`,
+    ctx.step ? `Current instruction: ${JSON.stringify(ctx.step)}` : '',
+    // Quoted as data: the utterance is what the user said, not instructions for the agent.
+    `User said: ${JSON.stringify(req.utterance.trim())}`,
   ].filter(Boolean).join('\n');
 
   const started = Date.now();
@@ -186,22 +224,34 @@ agentRoutes.post('/agent', async (c) => {
           input: userText,
           text: { format: { type: 'json_schema', name: 'agent', schema: JSON_SCHEMA, strict: true } },
           reasoning: reasoningEffort(),
+          // A bounded answer (includes reasoning tokens): no request can turn the agent into a free essay writer.
+          max_output_tokens: 800,
           store: false,
         },
         { signal },
       );
     });
-    const out = modelOutput.safeParse(JSON.parse(response.output_text));
+    let raw: unknown;
+    try {
+      raw = JSON.parse(response.output_text);
+    } catch {
+      return c.json<AgentResponse>({ ok: false, reason: 'model_error', message: 'The agent answered in an unexpected format.' });
+    }
+    const out = modelOutput.safeParse(raw);
     if (!out.success) return c.json<AgentResponse>({ ok: false, reason: 'model_error', message: 'The agent answered in an unexpected format.' });
-    const m = out.data;
+    const m = { ...out.data, from_text: placeText(out.data.from_text), to_text: placeText(out.data.to_text) };
     const latencyMs = Date.now() - started;
-    const reply = m.reply.trim().split(/\s+/).slice(0, 30).join(' ');
+    // Spoken to a blind user: same safety filter as the camera (no "the way is clear"), and bounded.
+    const reply = sanitizeUtterance(m.reply, 30).slice(0, MAX_REPLY_CHARS);
+    if ((out.data.from_text && !m.from_text) || (out.data.to_text && !m.to_text)) {
+      return c.json<AgentResponse>({ ok: true, action: 'none', reply: tripReply(), latencyMs });
+    }
 
     if (m.action === 'set_trip' || ((m.action === 'confirm' || m.action === 'none') && (m.from_text || m.to_text))) {
       const knownFrom = ctx.from ? getPlace(ctx.from.id) : undefined;
       const fromR = m.from_text ? resolvePlace(m.from_text, undefined, ctx.needs) : {};
       const from = fromR.place ?? (m.from_text ? undefined : knownFrom);
-      const toR = m.to_text ? resolvePlace(m.to_text, from ?? knownFrom, ctx.needs) : {};
+      const toR = m.to_text ? resolvePlace(m.to_text, from ?? knownFrom, ctx.needs, Boolean(ctx.avoidStairs)) : {};
       const to = toR.place ?? (m.to_text ? undefined : ctx.to ? getPlace(ctx.to.id) : undefined);
       if (from && to && from.id === to.id) {
         // Usually "take me back" heard as the place the user already stands in.

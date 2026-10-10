@@ -7,15 +7,32 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 // context, and browsers without the self-signed cert exception (e.g. embedded previews) can load it.
 const plainHttp = process.env.npm_lifecycle_event === 'dev:http';
 
+// Tunnel hostnames are allowed by suffix only: `allowedHosts: true` would switch off Vite's DNS-rebinding
+// protection. Add another with VITE_ALLOWED_HOSTS=.example.org (comma-separated).
+const allowedHosts = [
+  '.ngrok-free.app', '.ngrok.app', '.ngrok.io', '.trycloudflare.com', '.loca.lt',
+  ...(process.env.VITE_ALLOWED_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean),
+];
+
 // /api is proxied to the Hono server so the app runs on one origin.
 export default defineConfig({
   plugins: plainHttp ? [react()] : [react(), basicSsl()],
   server: {
     host: true,
     port: plainHttp ? 5174 : 5173,
-    // Tunnel hostnames (cloudflared/ngrok) are otherwise rejected by Vite's host check.
-    allowedHosts: true,
+    allowedHosts,
+    // The dev server may be reachable from a phone or a tunnel: serve only the app, the shared package and
+    // dependencies, never the rest of the monorepo (apps/server/.env holds the OpenAI key).
+    fs: { strict: true, allow: ['.', '../../packages/shared', '../../packages/routing', '../../node_modules'] },
+    headers: {
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'no-referrer',
+      'Permissions-Policy': 'camera=(self), microphone=(self), geolocation=(self), accelerometer=(self), gyroscope=(self), magnetometer=(self)',
+    },
     // API_PORT lets a second checkout (e.g. a worktree) run its own server next to the main one.
-    proxy: { '/api': `http://localhost:${process.env.API_PORT ?? 8787}` },
+    // xfwd: the API sees each phone's address (for per-client rate limits) instead of only this proxy's.
+    proxy: { '/api': { target: `http://127.0.0.1:${process.env.API_PORT ?? 8787}`, xfwd: true } },
   },
+  preview: { allowedHosts },
 });

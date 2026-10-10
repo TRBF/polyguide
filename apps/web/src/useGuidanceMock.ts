@@ -135,6 +135,7 @@ export const useGuidanceMock: UseGuidance = (
     repeat,
     whereAmI,
     whatsAhead,
+    checkStep: () => undefined,
     setBeaconEnabled,
   };
 };

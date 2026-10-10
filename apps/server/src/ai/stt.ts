@@ -9,8 +9,11 @@ import { toFile } from 'openai';
 import { classifyError, describeError, getOpenAI, withTimeout } from './openai';
 
 const TIMEOUT_MS = 8000;
-/** Commands are a few seconds; anything over ~1 MB of compressed audio is not a command. */
-const MAX_BYTES = 1024 * 1024;
+/**
+ * The phone cuts a command at 12 s: about 200 KB of AAC on iOS (128 kb/s), under 100 KB of Opus elsewhere.
+ * Billing is per second of audio, so a low-bitrate file of minutes must not get through either.
+ */
+const MAX_BYTES = 400 * 1024;
 const MIN_BYTES = 1000;
 
 export const sttModel = () => process.env.OPENAI_STT_MODEL?.trim() || 'gpt-4o-mini-transcribe';
@@ -24,7 +27,8 @@ const PROMPT = {
 /** Whisper's well-known inventions on silence or noise; never real commands. */
 const HALLUCINATIONS = [
   /^(thank you|thanks)( (so much|very much))?( for watching)?[.!]?$/i,
-  /^(you|bye|okay)[.!]?$/i,
+  // (Not "okay": it is a real answer to "Is that right?".)
+  /^(you|bye)[.!]?$/i,
   /subtitles? (by|from)|amara\.org|please subscribe|like and subscribe/i,
   /^vielen dank( fürs zuschauen)?[.!]?$/i,
   /^untertitel/i,

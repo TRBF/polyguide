@@ -31,6 +31,10 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
   /** True while hands-free listening is on; it survives pauses for the app voice and browser timeouts. */
   const keepAlive = useRef(false);
   const resumeTimer = useRef<number | null>(null);
+  /** Sessions stopped gracefully (not aborted): a command they already heard is still delivered. */
+  const draining = useRef(new Set<RecognitionLike>());
+  /** Consecutive network failures; hands-free backs off instead of retrying (and beeping) forever offline. */
+  const networkErrors = useRef(0);
 
   onCommandRef.current = onCommand;
   languageRef.current = language;
@@ -47,13 +51,14 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
     return () => window.clearTimeout(timer);
   }, [transcript]);
 
-  /** Drops the current session; its later events are ignored. */
+  /** Detaches the current session. 'abort' drops anything it heard; 'stop' still delivers a finished command. */
   function endSession(how: 'stop' | 'abort'): void {
     const session = sessionRef.current;
     sessionRef.current = null;
     setMicActive(false);
     if (session) {
-      try { session[how](); } catch { /* already ended */ }
+      if (how === 'stop') draining.current.add(session);
+      try { session[how](); } catch { draining.current.delete(session); }
     }
   }
 
@@ -67,7 +72,9 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
     session.continuous = handsFree;
     session.interimResults = false;
     session.onresult = (event) => {
-      if (sessionRef.current !== session) return;
+      const live = sessionRef.current === session;
+      // A session paused for the app's voice still hands over the command it recorded before the pause.
+      if (!live && !draining.current.has(session)) return;
       const words: string[] = [];
       // Only results added since the last event; continuous sessions accumulate the whole history.
       for (let index = event.resultIndex ?? 0; index < event.results.length; index += 1) {
@@ -75,7 +82,8 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
         if (result?.isFinal && result[0]?.transcript) words.push(result[0].transcript.trim());
       }
       const phrase = words.join(' ');
-      if (!phrase || (handsFree && speechRecentlyActive())) return; // the app hearing itself
+      if (!phrase || (live && handsFree && speechRecentlyActive())) return; // the app hearing itself
+      networkErrors.current = 0;
       setTranscript(phrase);
       setVoiceError('');
       onCommandRef.current(phrase);
@@ -84,13 +92,21 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
       if (sessionRef.current !== session) return;
       if (event.error === 'no-speech' || event.error === 'aborted') return;
       if (event.error === 'not-allowed' || event.error === 'service-not-allowed') keepAlive.current = false;
+      if (event.error === 'network') {
+        networkErrors.current += 1;
+        if (networkErrors.current >= 4) keepAlive.current = false;
+        setVoiceError(keepAlive.current ? 'Voice input lost the connection. Retrying…' : 'Voice input needs a connection. Type the command below, or tap the mic to try again.');
+        return;
+      }
       setVoiceError(event.error === 'not-allowed' ? 'Microphone access was denied. Type the same command below.' : 'Voice input stopped. Type the same command below.');
     };
     session.onend = () => {
+      if (draining.current.delete(session)) return;
       if (sessionRef.current !== session) return;
       sessionRef.current = null;
       setMicActive(false);
-      if (keepAlive.current) scheduleResume(300);
+      // Offline: wait longer after each failure (1 s, 2 s, 4 s) instead of a tight retry loop.
+      if (keepAlive.current) scheduleResume(networkErrors.current ? 1000 * 2 ** (networkErrors.current - 1) : 300);
       else setListening(false);
     };
     try {
@@ -138,7 +154,8 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
       if (!keepAlive.current) return;
       if (speaking) {
         clearResume();
-        if (sessionRef.current) endSession('abort');
+        // Stop, not abort: a command the user finished just before the app spoke is still transcribed.
+        if (sessionRef.current) endSession('stop');
       } else scheduleResume(300);
     });
     return () => {
@@ -160,6 +177,7 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
     }
     // Pressing the mic interrupts the app (barge-in); Android would mute it while the mic is open anyway.
     stopSpeech();
+    networkErrors.current = 0;
     keepAlive.current = continuous;
     setTranscript('');
     setVoiceError('');

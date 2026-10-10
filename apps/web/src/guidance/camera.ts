@@ -1,11 +1,12 @@
 /**
  * The app's single rear-camera stream (SPEC §5.5), shared by the vision loop and "Scan a room
  * sign" (../camera.ts delegates here). iOS mutes an older stream when a second one opens, so there
- * must be only one. Navigation holds it open; otherwise it closes after 45 s idle. It restarts
+ * must be only one. Navigation holds it open; otherwise it closes after 20 s idle. It restarts
  * itself if the track was ended or muted.
  */
 
-const IDLE_MS = 45_000;
+/** Short: a camera light that stays on after navigation feels like being watched. */
+const IDLE_MS = 20_000;
 /** First frames after play() are often black while auto-exposure settles. */
 const WARMUP_MS = 350;
 
@@ -56,11 +57,19 @@ export async function startCamera(): Promise<MediaStream> {
     v.playsInline = true;
     v.setAttribute('playsinline', '');
     v.srcObject = s;
-    await v.play();
-    if (!v.videoWidth) await new Promise<void>((r) => v.addEventListener('loadedmetadata', () => r(), { once: true }));
-    await new Promise((r) => setTimeout(r, WARMUP_MS));
+    try {
+      await v.play();
+      if (!v.videoWidth) await new Promise<void>((r) => v.addEventListener('loadedmetadata', () => r(), { once: true }));
+      await new Promise((r) => setTimeout(r, WARMUP_MS));
+    } catch (error) {
+      // Never leave a camera running that nothing can reach (the light would stay on).
+      s.getTracks().forEach((t) => t.stop());
+      throw error;
+    }
     stream = s;
     video = v;
+    // Navigation may have ended while the camera was starting: start the idle countdown now.
+    if (!held) holdCamera(false);
     return s;
   })();
   try {

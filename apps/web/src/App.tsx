@@ -19,7 +19,7 @@ import { VoicePicker } from './voice/VoicePicker';
 import { answerForScreen, parseAppCommand, parseCommand } from './voice/commands';
 import { clearRecents, hasSavedPreferences, loadPreferences, recentPlaces, rememberPlace, savePreferences, type Preferences } from './storage';
 import { useGuidance } from './guidance';
-import { buzz } from './guidance/heading';
+import { PATTERN_LEGEND, buzz, stepPattern } from './guidance/haptics';
 import { requestSensorPermissions } from './sensorPermissions';
 import './styles.css';
 
@@ -50,6 +50,8 @@ const screenHelp: Record<Screen, string> = {
 const voiceOnlyHint = 'You can also say settings, slower, start over, or change my needs at any time. In an emergency, say emergency.';
 /** The one question the trip screen asks, in the user's own words back. */
 const ASK_TRIP = 'Where are you, and where do you want to go? For example: I am in F 7, take me to F 30.';
+/** How many choices are read out, shown and numbered: the same everywhere, so "number 3" means one thing. */
+const MAX_OPTIONS = 4;
 const WELCOME = `Welcome to PolyGuide. ${safetyNotice} ${ASK_TRIP} If you are blind or use a wheelchair, tell me.`;
 
 /** "79 metres, about 2 minutes. No stairs. Uses 1 elevator." */
@@ -171,7 +173,13 @@ export function App() {
   /** What the user last said or typed, shown back so they can see what was understood. */
   const [heard, setHeard] = useState('');
   /** A trip the agent understood and is asking about ("From F 7 to F 30. Is that right?"). */
-  const [pending, setPending] = useState<{ from?: Place; to?: Place } | null>(null);
+  const [pending, setPendingState] = useState<{ from?: Place; to?: Place } | null>(null);
+  /** The trip being proposed, readable at once: two quick sentences must not each see a stale copy. */
+  const pendingRef = useRef<{ from?: Place; to?: Place } | null>(null);
+  function setPending(next: { from?: Place; to?: Place } | null): void {
+    pendingRef.current = next;
+    setPendingState(next);
+  }
   /** Places the agent read out as numbered options. */
   const [agentOptions, setAgentOptions] = useState<{ places: Place[]; for: 'from' | 'to' } | null>(null);
   const [thinking, setThinking] = useState(false);
@@ -182,6 +190,41 @@ export function App() {
   /** Touch users get push-to-talk once they touch the screen; until then (and always in voice-first) the mic listens. */
   const [touched, setTouched] = useState(false);
   const lastVisionStep = useRef('');
+  // Screen readers: when a screen swaps, the focused button disappears and focus falls to the page. Put it on
+  // the new screen's heading instead (never steal it from a field or button the user is on).
+  useEffect(() => {
+    if (!started) return;
+    const timer = window.setTimeout(() => {
+      const active = document.activeElement;
+      if (active && active !== document.body) return;
+      const heading = document.querySelector<HTMLElement>('main h1');
+      if (!heading) return;
+      heading.tabIndex = -1;
+      heading.focus({ preventScroll: true });
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [screen, started]);
+
+  // The emergency dialog takes focus (on its title, not a call button a stray tap could press) and closes on Escape.
+  useEffect(() => {
+    if (!emergencyOpen) return;
+    const opener = document.activeElement as HTMLElement | null;
+    document.getElementById('emergency-title')?.focus();
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setEmergencyOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      opener?.focus?.();
+    };
+  }, [emergencyOpen]);
+
+  const dispatchQueue = useRef<Promise<void>>(Promise.resolve());
+  const latestDispatch = useRef<(text: string) => Promise<void>>(async () => undefined);
+  /** Changes whenever navigation ends; async work started earlier checks it before acting. */
+  const navToken = useRef(0);
+  useEffect(() => {
+    if (screen !== 'navigate') navToken.current += 1;
+  }, [screen]);
   const hapticsRef = useRef(preferences.settings.haptics);
   hapticsRef.current = preferences.settings.haptics;
 
@@ -202,8 +245,6 @@ export function App() {
     if (guidanceAnnouncementTimer.current !== null) window.clearTimeout(guidanceAnnouncementTimer.current);
     guidanceAnnouncementTimer.current = window.setTimeout(() => setLiveGuidanceAnnouncement(text), 60);
     speak(text, priority);
-    // Deaf and hard-of-hearing users feel each new instruction (Android; iOS has no web vibration).
-    if (priority === 'instruction' && hapticsRef.current) buzz([70, 50, 70]);
   }, []);
 
   const onGuidanceRouteChange = useCallback((nextRoute: Route) => setRoute(nextRoute), []);
@@ -273,16 +314,30 @@ export function App() {
     return off;
   }, [guidance.start, route?.routeId, screen, startAfterRoute]);
 
-  // The camera checks every new step automatically (and whenever the user asks).
+  // Every change of movement is felt: each new step (and arrival, and a reroute's first step) buzzes the
+  // pattern for what to do next, so users who cannot hear the voice still notice every turn.
+  const lastHapticStep = useRef('');
   useEffect(() => {
-    if (screen !== 'navigate' || !cameraGranted || !route || guidance.phase === 'idle') return;
+    if (screen !== 'navigate' || !route || guidance.phase === 'idle' || !guidance.currentStep) return;
+    const key = `${route.routeId}:${guidance.stepIndex}:${guidance.phase === 'arrived' ? 'arrived' : ''}`;
+    if (lastHapticStep.current === key) return;
+    lastHapticStep.current = key;
+    if (hapticsRef.current) buzz(stepPattern(guidance.phase === 'arrived' ? 'arrive' : guidance.currentStep.maneuver));
+  }, [screen, route?.routeId, guidance.stepIndex, guidance.phase, guidance.currentStep]);
+
+  // The camera checks every new step automatically (and whenever the user asks). It goes through the
+  // guidance engine, which runs one camera request at a time and stops when the server has no AI.
+  const guidanceActive = guidance.phase === 'navigating' || guidance.phase === 'approaching';
+  useEffect(() => {
+    if (screen !== 'navigate' || !cameraGranted || !route || !guidanceActive) return;
     const key = `${route.routeId}:${guidance.stepIndex}`;
     if (lastVisionStep.current === key) return;
-    lastVisionStep.current = key;
-    const timer = window.setTimeout(() => { void checkCamera('approaching_node', true); }, 1200);
+    const timer = window.setTimeout(() => {
+      lastVisionStep.current = key; // only once it really ran: a cancelled timer retries on the next render
+      guidance.checkStep();
+    }, 1200);
     return () => window.clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, cameraGranted, route?.routeId, guidance.stepIndex, guidance.phase]);
+  }, [screen, cameraGranted, route?.routeId, guidance.stepIndex, guidanceActive, guidance.checkStep]);
 
   useEffect(() => {
     if (screen === 'navigate' && guidance.phase === 'arrived') {
@@ -366,8 +421,8 @@ export function App() {
     if (!found) return [];
     const matches = found;
     const filtered = narrowToCode(matches.filter((place) => place.kind === 'room' || place.kind === 'entrance' || place.kind === 'poi'), query);
-    setOriginMatches(filtered.slice(0, 5));
-    return filtered.slice(0, 5);
+    setOriginMatches(filtered.slice(0, MAX_OPTIONS));
+    return filtered.slice(0, MAX_OPTIONS);
   }
 
   /** Of several candidate places, the one with the quickest route for this profile (or null). */
@@ -409,7 +464,7 @@ export function App() {
     if (!found) return [];
     // Never offer the place the user is already at ("nearest exit" from the main entrance is not the main entrance).
     const filtered = narrowToCode(found.filter((place) => (place.kind === 'room' || place.kind === 'poi' || place.kind === 'entrance') && place.id !== origin?.id && place.nodeId !== origin?.nodeId), searchText);
-    const shown = filtered.slice(0, 5);
+    const shown = filtered.slice(0, MAX_OPTIONS);
     setDestinationMatches(shown);
     // A spoken room code that names a room exactly ("HG F 30", "F 30") needs no disambiguation.
     // Only a unique exact name counts: "accessible toilet" names several places, so the nearest wins instead.
@@ -435,7 +490,7 @@ export function App() {
     } else if (byVoice) {
       announce(`I found ${shown.length} matches: ${listPlaceNames(shown)}. Say the number, or choose a result on screen.`);
     }
-    return filtered.slice(0, 5);
+    return filtered.slice(0, MAX_OPTIONS);
   }
 
   async function chooseOrigin(place: Place): Promise<void> {
@@ -496,7 +551,7 @@ export function App() {
     }
   }
 
-  async function rerouteFromNode(nodeId: string, roomText: string): Promise<void> {
+  async function rerouteFromNode(nodeId: string, roomText: string, token = navToken.current): Promise<void> {
     if (!route) return;
     setBusy(true);
     const result = await api.route({
@@ -505,6 +560,8 @@ export function App() {
       profile,
     });
     setBusy(false);
+    // The user stopped or started another trip while this was in flight: do not pull them back in.
+    if (token !== navToken.current) return;
     if (!result.ok) {
       announce(`I found ${roomText}, but could not build a new route from there. ${result.message}`);
       return;
@@ -516,6 +573,8 @@ export function App() {
   }
 
   async function checkCamera(trigger: VisionTrigger = 'user_query', quiet = false): Promise<void> {
+    const token = navToken.current;
+    const wasNavigating = screen === 'navigate';
     setCameraBusy(true);
     setCameraMessage('Camera is checking…');
     try {
@@ -543,10 +602,11 @@ export function App() {
         setMessage(vision.utterance);
         speak(vision.utterance, 'vision');
       }
-      if (vision.offRouteSuspected && vision.detectedRoomNames[0]) {
+      if (vision.offRouteSuspected && vision.detectedRoomNames[0] && wasNavigating && token === navToken.current) {
         const sign = vision.detectedRoomNames[0];
         const localized = await api.localize({ roomText: sign });
-        if (localized.ok && localized.confidence >= 0.9) await rerouteFromNode(localized.nodeId, sign);
+        if (token !== navToken.current) return;
+        if (localized.ok && localized.confidence >= 0.9) await rerouteFromNode(localized.nodeId, sign, token);
         else if (localized.ok) {
           // A fuzzy match could be a misread sign; ask instead of rerouting from the wrong room.
           announce(`I may have read ${sign}, but I am not sure. Say "I am at ${localized.place?.name ?? sign}" to reroute from there.`, 'vision');
@@ -614,20 +674,20 @@ export function App() {
       setScreen(screenBeforeSettings);
       return;
     }
-    const previous: Partial<Record<Screen, Screen>> = {
-      permissions: 'needs',
-      where: 'permissions',
-      destination: 'where',
-      preview: 'destination',
-      navigate: 'preview',
-      arrived: 'destination',
-    };
     if (screen === 'navigate') {
       guidance.stop();
       releaseScreenWakeLock();
+      setScreen('preview');
+      return;
     }
-    const target = previous[screen];
-    if (target) setScreen(target);
+    if (screen === 'arrived') {
+      setScreen('where');
+      return;
+    }
+    // where / destination / preview are all the one trip screen: Back drops a proposal, but never walks into
+    // the old setup screens (permissions, needs), which the one-screen design no longer shows.
+    if (pendingRef.current || agentOptions) rejectPending();
+    else if (screen !== 'where') setScreen('where');
   }
 
   moveBackRef.current = moveBack;
@@ -763,15 +823,13 @@ export function App() {
         return;
       case 'where_am_i':
         if (screen === 'navigate') {
-          if (cameraGranted) {
-            guidance.whereAmI();
-            void checkCamera('user_query');
-          } else if (route) {
-            // The engine's own answer is spoken only; mirror it on screen so the HUD shows the same thing.
+          // The engine speaks the position and, with the camera on, reads the signs in view. Mirror the
+          // position on screen so the HUD shows what was said.
+          if (route) {
             const step = route.steps[Math.min(guidance.stepIndex, route.steps.length - 1)];
             setMessage(`Step ${guidance.stepIndex + 1} of ${route.steps.length}, floor ${step.levelId.split('.').at(-1)}, ${Math.round(guidance.remainingTotalM)} m to go.`);
-            guidance.whereAmI();
           }
+          guidance.whereAmI();
         } else if (screen === 'where') announce(origin ? `Your starting point is ${origin.name}.` : 'Choose or scan a room to set your starting point.');
         else announce(origin ? `You started from ${origin.name}.` : 'Your starting point has not been selected.');
         return;
@@ -808,7 +866,7 @@ export function App() {
           const matches = await findOrigins(intent.target);
           const exact = matches.find((place) => sameName(place, intent.target ?? ''));
           if (matches.length === 1 || exact) await chooseOrigin(exact ?? matches[0]);
-          else if (matches.length > 1) announce(`I found ${matches.length} starting points: ${listPlaceNames(matches.slice(0, 3))}. Say a number.`);
+          else if (matches.length > 1) announce(`I found ${Math.min(matches.length, MAX_OPTIONS)} starting points: ${listPlaceNames(matches.slice(0, MAX_OPTIONS))}. Say a number.`);
           else announce(`I couldn't find ${intent.target}. Try a room number.`);
         }
         return;
@@ -834,8 +892,24 @@ export function App() {
     }
   }
 
-  /** Everything said or typed lands here: instant local commands first, everything else goes to the agent. */
-  async function dispatchCommand(transcript: string): Promise<void> {
+  /**
+   * Everything said or typed lands here. Commands run one at a time, in order: "I'm in F7 … take me to F30"
+   * can arrive as two clips, and the second must see the trip the first one set up, not race it.
+   */
+  function dispatchCommand(transcript: string): Promise<void> {
+    // An emergency, or stop/next while walking, never waits behind a slow agent request.
+    const urgent = parseAppCommand(transcript)?.type === 'emergency'
+      || /^(stop|cancel|next|repeat|back|help)[.!?]?$/i.test(transcript.trim());
+    if (urgent) return latestDispatch.current(transcript).catch(() => undefined);
+    const run = dispatchQueue.current
+      .then(() => new Promise((resolve) => window.setTimeout(resolve, 0))) // let React commit the previous result
+      .then(() => latestDispatch.current(transcript))
+      .catch(() => undefined);
+    dispatchQueue.current = run;
+    return run;
+  }
+
+  async function runDispatch(transcript: string): Promise<void> {
     const said = transcript.trim();
     if (!said) return;
     setHeard(said);
@@ -871,12 +945,14 @@ export function App() {
     else await legacyCommand(said);
   }
 
+  latestDispatch.current = runDispatch;
+
   function agentContext() {
     // Once arrived, the user stands at the old destination: that is where any new trip starts.
     const arrivedAt = screen === 'arrived' && route ? route.to : undefined;
-    const from = pending?.from ?? arrivedAt ?? origin ?? undefined;
-    const to = pending?.to ?? (arrivedAt ? undefined : destination ?? undefined);
-    const phase = pending?.from && pending.to ? 'confirm' as const
+    const from = pendingRef.current?.from ?? arrivedAt ?? origin ?? undefined;
+    const to = pendingRef.current?.to ?? (arrivedAt ? undefined : destination ?? undefined);
+    const phase = pendingRef.current?.from && pendingRef.current.to ? 'confirm' as const
       : screen === 'navigate' ? 'navigate' as const
       : screen === 'arrived' ? 'arrived' as const
       : route && screen === 'preview' ? 'ready' as const
@@ -886,7 +962,7 @@ export function App() {
       phase,
       ...(from ? { from: { id: from.id, name: from.name } } : {}),
       ...(to ? { to: { id: to.id, name: to.name } } : {}),
-      ...(options.length ? { options: options.slice(0, 5).map((p) => ({ id: p.id, name: p.name })) } : {}),
+      ...(options.length ? { options: options.slice(0, MAX_OPTIONS).map((p) => ({ id: p.id, name: p.name })) } : {}),
       needs: profile.needs,
       avoidStairs: Boolean(profile.avoidStairs),
       ...(screen === 'navigate' && guidance.currentStep ? { step: guidance.currentStep.text } : {}),
@@ -897,20 +973,17 @@ export function App() {
     misunderstood.current = 0;
     switch (r.action) {
       case 'set_trip': {
-        const next = { from: r.from ?? pending?.from ?? origin ?? undefined, to: r.to ?? pending?.to ?? undefined };
-        setPending(next);
+        // The server already merged what it knew: what it left out (an ambiguous or unknown place) stays out.
+        setPending({ from: r.from, to: r.to });
         setAgentOptions(r.options?.length ? { places: r.options, for: r.optionsFor ?? 'to' } : null);
-        if (screen === 'navigate' || screen === 'arrived') {
-          guidance.stop();
-          releaseScreenWakeLock();
-          setScreen('where');
-        }
-        announce(r.reply);
+        // While walking, a new trip is only a proposal: guidance keeps going until the user says yes.
+        if (screen === 'arrived') setScreen('where');
+        announce(screen === 'navigate' && r.from && r.to ? `${r.reply} Say yes to switch, or no to keep going.` : r.reply);
         return;
       }
       case 'confirm':
       case 'start':
-        if (pending?.from && pending.to) await confirmPending();
+        if (pendingRef.current?.from && pendingRef.current.to) await confirmPending();
         else if (route && screen === 'preview') beginNavigation();
         else announce(r.reply || ASK_TRIP);
         return;
@@ -929,7 +1002,7 @@ export function App() {
           if (need === 'avoidStairs') updatePreferences((current) => ({ ...current, profile: { ...current.profile, avoidStairs: false } }));
           else setNeedState(need, false);
         }
-        announce(`${r.reply || 'Got it.'}${origin || pending ? '' : ` ${ASK_TRIP}`}`);
+        announce(`${r.reply || 'Got it.'}${origin || pendingRef.current ? '' : ` ${ASK_TRIP}`}`);
         return;
       }
       case 'emergency':
@@ -949,6 +1022,8 @@ export function App() {
         openSettings();
         return;
       case 'none':
+        // Continuous listening hears hallway chatter: stay quiet while walking rather than talk over guidance.
+        if (screen === 'navigate') return;
         announce(r.reply || `Sorry, I did not get that. ${ASK_TRIP}`);
         return;
       default:
@@ -958,15 +1033,20 @@ export function App() {
 
   /** "Yes": the trip the agent proposed becomes the route, and navigation starts right away. */
   async function confirmPending(): Promise<void> {
-    const trip = pending;
+    const trip = pendingRef.current;
     if (!trip?.from || !trip.to) return;
     setPending(null);
     setAgentOptions(null);
+    const next = await createRoute(trip.to, trip.from);
+    if (!next) {
+      // createRoute said why; keep the proposal so "yes" can be tried again (or "no" to drop it).
+      setPending(trip);
+      return;
+    }
+    if (screen === 'navigate') guidance.stop();
     rememberPlace('origin', trip.from);
     setOrigin(trip.from);
     setOriginQuery(trip.from.name);
-    const next = await createRoute(trip.to, trip.from);
-    if (!next) return;
     beginNavigation(next);
     announce(`Starting. ${shortSummary(next)}`);
   }
@@ -974,7 +1054,7 @@ export function App() {
   function rejectPending(reply?: string): void {
     setPending(null);
     setAgentOptions(null);
-    announce(reply || `Okay. ${ASK_TRIP}`);
+    announce(reply || (screen === 'navigate' ? 'Okay, keeping the current route.' : `Okay. ${ASK_TRIP}`));
   }
 
   /** "The second one": fill the side the options were for, then ask to confirm the whole trip. */
@@ -988,7 +1068,7 @@ export function App() {
       announce(`Say a number from 1 to ${agentOptions.places.length}.`);
       return;
     }
-    const next = { ...pending, [agentOptions.for]: place } as { from?: Place; to?: Place };
+    const next = { ...pendingRef.current, [agentOptions.for]: place } as { from?: Place; to?: Place };
     setPending(next);
     setAgentOptions(null);
     if (next.from && next.to) announce(`From ${displayName(next.from)} to ${displayName(next.to)}. Is that right?`);
@@ -1049,7 +1129,7 @@ export function App() {
         startOver();
         return;
       case 'yes':
-        if (pending?.from && pending.to) await confirmPending();
+        if (pendingRef.current?.from && pendingRef.current.to) await confirmPending();
         else if (screen === 'preview') beginNavigation();
         else if (screen === 'needs') setScreen('permissions');
         else if (screen === 'permissions') { await enableDevicePermissions(); setScreen('where'); }
@@ -1059,7 +1139,7 @@ export function App() {
         else announce('Okay.');
         return;
       case 'no':
-        if (pending) rejectPending();
+        if (pendingRef.current) rejectPending();
         else if (screen === 'preview') { setScreen('destination'); announce('Okay. Say take me to, and another room.'); }
         else if (screen === 'permissions') setScreen('where');
         else announce('Okay.');
@@ -1266,7 +1346,7 @@ export function App() {
 
             {optionList.length > 0 && !confirming && (
               <ol className="options">
-                {optionList.slice(0, 4).map((place, index) => (
+                {optionList.slice(0, MAX_OPTIONS).map((place, index) => (
                   <li key={place.id}>
                     <button type="button" className="option" onClick={() => chooseFromList(place, index)}>
                       <span className="option-n">{index + 1}</span>
@@ -1331,14 +1411,27 @@ export function App() {
             {(heard || (message && !thinking)) && (
               <p className="hud-convo">{heard && <span className="hud-heard">“{heard}” </span>}{thinking ? 'Thinking…' : message}</p>
             )}
-            {!voiceFirst && (
+            {confirming && (
+              // A new trip proposed while walking: the current route keeps running until the user says yes.
+              <div className="hud-controls hud-controls-two" role="group" aria-label="Switch to the new trip?">
+                <button type="button" className="hud-pill hud-pill-accent" onClick={() => void confirmPending()}>Yes, switch</button>
+                <button type="button" className="hud-pill" onClick={() => rejectPending()}>No, keep going</button>
+              </div>
+            )}
+            {!confirming && (voiceFirst ? (
+              // Voice-first keeps only the two buttons that matter when speech fails in a noisy hall.
+              <div className="hud-controls hud-controls-two" role="group" aria-label="Navigation controls">
+                <button type="button" className="hud-pill hud-pill-accent" onClick={() => guidance.next()}>{guidance.currentStep?.maneuver === 'take_elevator' ? 'Done' : 'Next step'}</button>
+                <button type="button" className="hud-pill hud-pill-stop" onClick={() => { guidance.stop(); releaseScreenWakeLock(); setScreen('preview'); }}>Stop</button>
+              </div>
+            ) : (
               <div className="hud-controls" role="group" aria-label="Navigation controls">
                 <button type="button" className="hud-pill" onClick={() => guidance.repeat()}>Repeat</button>
                 <button type="button" className="hud-pill hud-pill-accent" onClick={() => guidance.next()}>{guidance.currentStep?.maneuver === 'take_elevator' ? 'Done' : 'Next'}</button>
-                <button type="button" className="hud-pill" onClick={() => { guidance.whereAmI(); if (cameraGranted) void checkCamera('user_query'); }}>Where am I?</button>
+                <button type="button" className="hud-pill" onClick={() => void runIntent({ type: 'where_am_i', source: 'regex' })}>Where am I?</button>
                 <button type="button" className="hud-pill hud-pill-stop" onClick={() => { guidance.stop(); releaseScreenWakeLock(); setScreen('preview'); }}>Stop</button>
               </div>
-            )}
+            ))}
             {!voiceFirst && (
               <div className="hud-links">
                 <button type="button" className="hud-link" onClick={() => setSheetOpen(true)}>Map</button>
@@ -1395,7 +1488,10 @@ export function App() {
           <label className="setting-control" htmlFor="speech-rate"><span><strong>Speech rate</strong><small>{preferences.settings.speechRate.toFixed(1)}×</small></span><input id="speech-rate" type="range" min="0.6" max="1.5" step="0.1" value={preferences.settings.speechRate} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, speechRate: Number(event.target.value) } }))} /></label>
           <label className="toggle-row"><input type="checkbox" checked={preferences.settings.speakWithAppVoice} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, speakWithAppVoice: event.target.checked } }))} /><span><strong>Speak with app voice</strong><small>Turn this off when your screen reader already reads the instruction.</small></span></label>
           <label className="toggle-row"><input type="checkbox" checked={preferences.settings.beaconEnabled} onChange={(event) => { const enabled = event.target.checked; updatePreferences((current) => ({ ...current, settings: { ...current.settings, beaconEnabled: enabled } })); guidance.setBeaconEnabled(enabled); }} /><span><strong>Audio direction beacon</strong><small>A stereo tick that moves toward the route direction and double-ticks when you face it.</small></span></label>
-          <label className="toggle-row"><input type="checkbox" checked={preferences.settings.haptics} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, haptics: event.target.checked } }))} /><span><strong>Vibrate on each new instruction</strong><small>Feel when the next step starts. Android phones.</small></span></label>
+          <label className="toggle-row"><input type="checkbox" checked={preferences.settings.haptics} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, haptics: event.target.checked } }))} /><span><strong>Vibrate at every step</strong><small>{PATTERN_LEGEND}</small></span></label>
+          {preferences.settings.haptics && (
+            <button type="button" className="button button-ghost" onClick={() => { buzz(stepPattern('left')); window.setTimeout(() => buzz(stepPattern('right')), 900); announce('Two buzzes: left. Three buzzes: right.'); }}>Try the vibrations</button>
+          )}
           <div className="setting-control">
             <span><strong>Text size</strong></span>
             <div className="floor-tabs" role="group" aria-label="Text size">
@@ -1417,7 +1513,7 @@ export function App() {
       {started && emergencyOpen && (
         <div className="sheet-backdrop" role="presentation">
           <section className="emergency-panel" role="alertdialog" aria-modal="true" aria-labelledby="emergency-title" aria-describedby="emergency-location">
-            <h2 id="emergency-title">Emergency</h2>
+            <h2 id="emergency-title" tabIndex={-1}>Emergency</h2>
             <p>If you are in danger or hurt, call for help. Tell them where you are:</p>
             <p id="emergency-location" className="emergency-location">{locationDescription()}</p>
             <div className="emergency-actions">

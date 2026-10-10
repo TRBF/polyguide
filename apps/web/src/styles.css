@@ -180,7 +180,8 @@ h1, h2 { font-weight: 700; letter-spacing: -.01em; }
 .hud-track li.current { background: var(--accent); }
 .hud-arrow { flex: 1; min-height: 0; display: grid; place-items: center; color: var(--accent); font-size: min(30vh, 180px); font-weight: 700; line-height: 1; text-shadow: 0 4px 24px rgba(0,0,0,.7); transition: transform .25s ease; }
 .hud-minimal .hud-panel { margin-top: auto; }
-.hud-panel { display: grid; gap: var(--sp-2); padding: var(--sp-4); border: 1px solid var(--glass-line); border-radius: var(--r-lg); background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+/* Never pushed under the dock on short phones: the panel itself scrolls as a last resort, buttons stay reachable. */
+.hud-panel { min-height: 0; max-height: 100%; overflow-y: auto; overscroll-behavior: contain; display: grid; gap: var(--sp-2); padding: var(--sp-4); border: 1px solid var(--glass-line); border-radius: var(--r-lg); background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
 .hud-fromto { color: var(--muted); font-size: var(--t-sm); font-weight: 700; }
 .hud-instruction { font-size: var(--t-xl); font-weight: 700; line-height: 1.15; }
 .app-voice-first .hud-instruction { font-size: var(--t-2xl); }
@@ -189,6 +190,13 @@ h1, h2 { font-weight: 700; letter-spacing: -.01em; }
 .hud-convo { color: #e4e4e7; font-size: var(--t-sm); }
 .hud-heard { color: var(--muted); }
 .hud-controls { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--sp-2); margin-top: var(--sp-1); }
+.hud-controls.hud-controls-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.hud-controls-two .hud-pill { min-height: 64px; font-size: var(--t-body); }
+/* Short screens: drop the extras, keep the instruction and the buttons. */
+@media (max-height: 700px) {
+  .hud-next, .hud-sub { display: none; }
+  .hud-arrow { font-size: min(18vh, 120px); }
+}
 .hud-pill { min-height: 56px; padding: 0 var(--sp-2); border: 1px solid var(--glass-line); border-radius: var(--r-md); background: rgba(255,255,255,.08); color: var(--text); font-weight: 700; font-size: var(--t-sm); }
 .hud-pill-accent { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
 .hud-pill-stop { border-color: var(--danger); color: var(--danger); }
@@ -212,7 +220,7 @@ h1, h2 { font-weight: 700; letter-spacing: -.01em; }
 .floor-tabs { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .floor-tab { min-width: 88px; min-height: 48px; padding: 0 var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-sm); background: transparent; font-weight: 700; }
 .floor-tab[aria-pressed='true'] { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
-.emergency-panel { width: min(100% - 2 * var(--gutter), var(--page)); margin-bottom: var(--sp-4); padding: var(--sp-5); border: 3px solid var(--danger); border-radius: var(--r-lg); background: var(--s1); display: grid; gap: var(--sp-3); }
+.emergency-panel { width: min(100% - 2 * var(--gutter), var(--page)); max-height: calc(100dvh - 2 * var(--sp-2)); overflow-y: auto; margin-bottom: var(--sp-4); padding: var(--sp-5); border: 3px solid var(--danger); border-radius: var(--r-lg); background: var(--s1); display: grid; gap: var(--sp-3); }
 .emergency-panel h2 { color: var(--danger); font-size: var(--t-xl); }
 .emergency-location { padding: var(--sp-3); border-left: 5px solid var(--accent); background: var(--s2); font-weight: 700; font-size: var(--t-lg); }
 .emergency-actions { display: grid; gap: var(--sp-2); }

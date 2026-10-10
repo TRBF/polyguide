@@ -1,7 +1,7 @@
 /**
- * In-memory rate limits for the paid AI endpoints. The app can sit behind a public tunnel, so
- * every OpenAI-backed route gets a per-client budget plus a global ceiling (protects the key even
- * if many clients appear). Sliding one-minute window; resets on server restart, which is fine here.
+ * In-memory rate limits. The app can sit behind a public tunnel, so every OpenAI-backed route gets a
+ * per-client budget plus a global ceiling (protects the key even if many clients appear), and the whole
+ * API gets a looser one. Sliding one-minute window; resets on server restart, which is fine here.
  */
 import type { Context, MiddlewareHandler } from 'hono';
 
@@ -15,13 +15,21 @@ export interface RateLimitOptions {
 }
 
 const WINDOW_MS = 60_000;
+const LOOPBACK = /^(127\.|::1$|::ffff:127\.)/;
 
-/** Behind ngrok + the Vite proxy the socket peer is always localhost; the tunnel sets X-Forwarded-For. */
-function clientKey(c: Context): string {
-  const fwd = c.req.header('x-forwarded-for')?.split(',')[0]?.trim();
-  if (fwd) return fwd;
+/**
+ * Who is asking. Forwarding headers are only trusted when the socket peer is this machine (a tunnel or the
+ * Vite proxy); otherwise anyone could rotate a made-up X-Forwarded-For to dodge the per-client limit.
+ * Each proxy appends the address it saw, so reading from the right and skipping local hops (tunnel agent →
+ * Vite proxy) gives the address the outermost trusted proxy wrote; anything a client wrote sits further left.
+ */
+export function clientKey(c: Context): string {
   const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined;
-  return env?.incoming?.socket?.remoteAddress ?? 'unknown';
+  const peer = env?.incoming?.socket?.remoteAddress ?? 'unknown';
+  if (!LOOPBACK.test(peer)) return peer;
+  // (Not CF-Connecting-IP: behind ngrok a client could set it freely. cloudflared also appends X-Forwarded-For.)
+  const hops = c.req.header('x-forwarded-for')?.split(',').map((s) => s.trim()).filter(Boolean) ?? [];
+  return hops.reverse().find((ip) => !LOOPBACK.test(ip)) ?? peer;
 }
 
 export function rateLimit(opts: RateLimitOptions): MiddlewareHandler {
@@ -34,6 +42,17 @@ export function rateLimit(opts: RateLimitOptions): MiddlewareHandler {
     return i ? list.slice(i) : list;
   };
 
+  // Drop idle clients regularly so the map cannot grow without bound.
+  const sweep = setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of hits) {
+      const kept = prune(v, now);
+      if (kept.length) hits.set(k, kept);
+      else hits.delete(k);
+    }
+  }, WINDOW_MS);
+  sweep.unref?.();
+
   return async (c, next) => {
     const now = Date.now();
     const key = clientKey(c);
@@ -42,15 +61,13 @@ export function rateLimit(opts: RateLimitOptions): MiddlewareHandler {
     const blocked = mine.length >= opts.perClient ? mine : all.length >= opts.global ? all : null;
     if (blocked) {
       const retryAfterS = Math.max(1, Math.ceil((blocked[0] + WINDOW_MS - now) / 1000));
-      hits.set(key, mine);
+      if (mine.length) hits.set(key, mine);
       c.header('Retry-After', String(retryAfterS));
       return c.json(opts.body(retryAfterS) as object, 429);
     }
     mine.push(now);
     all.push(now);
     hits.set(key, mine);
-    // Keep the map from growing without bound under many distinct clients.
-    if (hits.size > 5000) for (const [k, v] of hits) if (!prune(v, now).length) hits.delete(k);
     await next();
   };
 }

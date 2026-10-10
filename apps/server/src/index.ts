@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { logger } from 'hono/logger';
@@ -9,16 +12,33 @@ import { mockRoutes } from './mock';
 import { devRoutes } from './devCompare';
 import { apiRoutes } from './routes';
 import { rateLimit } from './rateLimit';
+import { sameOriginApi, securityHeaders } from './security';
 
 const PORT = Number(process.env.PORT ?? 8787);
+// Loopback by default: in development the Vite proxy (and any tunnel) connects locally. Set HOST=0.0.0.0
+// only to serve the built app straight to phones on the LAN.
+const HOST = process.env.HOST?.trim() || '127.0.0.1';
 const USE_MOCK = process.env.USE_MOCK === '1';
+/** SERVE_WEB=1 (`pnpm start:app`): also serve the built web app, so the whole app is one origin and one port. */
+const WEB_DIST = path.resolve(process.env.WEB_DIST ?? fileURLToPath(new URL('../../web/dist', import.meta.url)));
+const serveWeb = process.env.SERVE_WEB === '1' && fs.existsSync(path.join(WEB_DIST, 'index.html'));
+if (process.env.SERVE_WEB === '1' && !serveWeb) console.warn(`SERVE_WEB=1 but ${WEB_DIST} has no index.html; run the web build first.`);
 
 const app = new Hono();
 app.use('*', logger());
+app.use('*', securityHeaders());
 // Floor plans are the only large responses; gzip them for phones.
 app.use('/api/map/*', compress());
 // Frames are ~150 KB; reject anything absurd before it reaches the OpenAI call.
 app.use('/api/*', bodyLimit({ maxSize: 2 * 1024 * 1024, onError: (c) => c.json({ ok: false, reason: 'invalid_request', message: 'Request too large.' }, 413) }));
+app.use('/api/*', sameOriginApi());
+// Everything else (routes, search, maps) is cheap, but unlimited calls could still evict other users'
+// routes from the in-memory store or tie up the CPU. A real user makes a few dozen calls a minute.
+app.use('/api/*', rateLimit({
+  perClient: Number(process.env.API_RATE_PER_MIN ?? 240),
+  global: Number(process.env.API_RATE_GLOBAL_PER_MIN ?? 3000),
+  body: (s) => ({ ok: false, reason: 'rate_limited', message: `Too many requests. Try again in ${s} seconds.` }),
+}));
 
 if (USE_MOCK) {
   app.route('/api', mockRoutes);
@@ -54,14 +74,31 @@ if (USE_MOCK) {
   app.route('/api', aiRoutes);
 }
 
-// The API has no UI; point anyone who opens the port in a browser to the web app.
-app.get('/', (c) => c.text(`PolyGuide API is running (mock=${USE_MOCK}). Open the app at https://localhost:5173 — health check: /api/health`));
+app.all('/api/*', (c) => c.json({ ok: false, reason: 'not_found', message: 'Unknown API route.' }, 404));
+
+if (serveWeb) {
+  // Production: the built app from this same origin, so only this one port needs a tunnel.
+  // Loaded only here: importing it eagerly hung the dev server's startup in some environments.
+  const { serveStatic } = await import('@hono/node-server/serve-static');
+  const root = path.relative(process.cwd(), WEB_DIST) || '.';
+  app.use('/assets/*', async (c, next) => {
+    await next();
+    if (c.res.ok) c.header('Cache-Control', 'public, max-age=31536000, immutable');
+  });
+  app.use('*', serveStatic({ root }));
+  // Single-page app: any other path gets the app shell.
+  app.get('*', serveStatic({ root, path: 'index.html' }));
+} else {
+  // The API has no UI of its own in development; point anyone who opens the port to the web app.
+  app.get('/', (c) => c.text(`PolyGuide API is running (mock=${USE_MOCK}). Open the app at https://localhost:5173 — health check: /api/health`));
+}
 
 app.onError((err, c) => {
   console.error(err);
-  return c.json({ ok: false, reason: 'server_error', message: err.message }, 500);
+  // Never send internals (stack, file paths, SDK messages) to the client.
+  return c.json({ ok: false, reason: 'server_error', message: 'Something went wrong on the server.' }, 500);
 });
 
-serve({ fetch: app.fetch, port: PORT }, (info) => {
-  console.log(`PolyGuide server on http://localhost:${info.port} (mock=${USE_MOCK})`);
+serve({ fetch: app.fetch, port: PORT, hostname: HOST }, (info) => {
+  console.log(`PolyGuide server on http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${info.port} (mock=${USE_MOCK}${serveWeb ? ', serving the built app' : ''})`);
 });

@@ -161,10 +161,15 @@ export function speak(text: string, speechPriority: SpeechPriority): void {
     return;
   }
 
-  if (currentPriority && priority[currentPriority] > priority[speechPriority]) return;
+  // Heading cues ("turn left") are stale a second later: drop them under anything more important. Camera
+  // answers and replies still matter after the instruction ends, so they wait their turn.
+  if (speechPriority === 'heading' && currentPriority && priority[currentPriority] > priority.heading) return;
   if (pendingStart !== null || busy || window.speechSynthesis.speaking) {
+    queue = queue.filter((queued) => queued.text !== item.text);
     queue.push(item);
     queue.sort((a, b) => priority[b.priority] - priority[a.priority]);
+    // Keep the backlog short: a user should never hear a minute-old sentence.
+    queue = queue.slice(0, 3);
     return;
   }
   start(item);

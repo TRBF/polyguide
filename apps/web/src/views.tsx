@@ -48,12 +48,20 @@ export function CameraBackdrop({ enabled }: { enabled: boolean }) {
 /** Map + step list in a sheet over the screen; the only place that scrolls. */
 export function RouteSheet({ route, levelId, onLevel, onClose, activeStepIndex }: { route: Route; levelId: string; onLevel: (levelId: string) => void; onClose: () => void; activeStepIndex?: number }) {
   const closeRef = useRef<HTMLButtonElement | null>(null);
+  // The parent re-renders many times a second while walking; keep the latest onClose without re-running
+  // the effect, which would pull focus back to Close and trap screen-reader users.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
     closeRef.current?.focus();
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onCloseRef.current(); };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      opener?.focus?.(); // back to the button that opened the sheet
+    };
+  }, []);
   return (
     <div className="sheet-backdrop" role="presentation" onClick={onClose}>
       <section className="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" onClick={(event) => event.stopPropagation()}>

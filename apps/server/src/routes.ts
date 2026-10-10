@@ -15,27 +15,31 @@ import {
   searchPlaces,
 } from './graphStore';
 
+/** Graph ids are short (e.g. "pl_lm_137", "30.0009"); anything longer is not an id. */
+const idSchema = z.string().min(1).max(80);
+/** Search text: a room code or a short name. */
+const MAX_QUERY = 100;
 const needSchema = z.enum(['wheelchair', 'blind', 'lowVision', 'lowStamina', 'avoidCrowds']);
 const profileSchema = z.object({
-  needs: z.array(needSchema).default([]),
+  needs: z.array(needSchema).max(5).default([]),
   avoidStairs: z.boolean().optional(),
-  avoidElevatorAt: z.array(z.string()).max(20).optional(),
+  avoidElevatorAt: z.array(idSchema).max(20).optional(),
   speedMps: z.number().positive().max(5).optional(),
-  stepLengthM: z.number().positive().optional(),
+  stepLengthM: z.number().positive().max(2).optional(),
   language: z.enum(['en', 'de']).optional(),
 });
 const locationSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('place'), placeId: z.string() }),
-  z.object({ type: z.literal('node'), nodeId: z.string() }),
-  z.object({ type: z.literal('coord'), lat: z.number(), lon: z.number(), levelId: z.string().optional() }),
+  z.object({ type: z.literal('place'), placeId: idSchema }),
+  z.object({ type: z.literal('node'), nodeId: idSchema }),
+  z.object({ type: z.literal('coord'), lat: z.number().min(-90).max(90), lon: z.number().min(-180).max(180), levelId: idSchema.optional() }),
 ]);
 const routeSchema = z.object({ from: locationSchema, to: locationSchema, profile: profileSchema.default({ needs: [] }) });
 const localizeSchema = z.object({
-  roomText: z.string().optional(),
-  lat: z.number().optional(),
-  lon: z.number().optional(),
-  accuracyM: z.number().optional(),
-  levelHint: z.string().optional(),
+  roomText: z.string().max(MAX_QUERY).optional(),
+  lat: z.number().min(-90).max(90).optional(),
+  lon: z.number().min(-180).max(180).optional(),
+  accuracyM: z.number().nonnegative().optional(),
+  levelHint: idSchema.optional(),
 });
 const PLACE_KINDS = ['room', 'poi', 'entrance', 'landmark', 'seat'] as const;
 
@@ -74,11 +78,12 @@ apiRoutes.get('/health', (c) => {
 apiRoutes.get('/levels', (c) => c.json(getGraph().levels));
 
 apiRoutes.get('/places', (c) => {
-  const q = c.req.query('q') ?? '';
+  const q = (c.req.query('q') ?? '').slice(0, MAX_QUERY);
   const limit = Math.min(50, Math.max(1, Number(c.req.query('limit') ?? 10) || 10));
   const kindQ = c.req.query('kind');
   const kind = PLACE_KINDS.find((k) => k === kindQ) as PlaceKind | undefined;
-  return c.json(searchPlaces(q, limit, kind, c.req.query('near') || undefined));
+  const near = c.req.query('near')?.slice(0, 80) || undefined;
+  return c.json(searchPlaces(q, limit, kind, near));
 });
 
 // Default: room outlines only (what the app draws, ~5x smaller). ?layers=all adds pathways and place points.
@@ -105,7 +110,7 @@ apiRoutes.post('/route', async (c) => {
     return c.json<RouteResult>(result);
   } catch (err) {
     console.error('route error', err);
-    return c.json<RouteResult>({ ok: false, reason: 'server_error', message: String(err) }, 500);
+    return c.json<RouteResult>({ ok: false, reason: 'server_error', message: 'Could not compute the route.' }, 500);
   }
 });
 

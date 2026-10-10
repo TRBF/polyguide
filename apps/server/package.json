@@ -7,6 +7,7 @@
     "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
     "dev:mock": "cross-env USE_MOCK=1 tsx watch --env-file-if-exists=.env src/index.ts",
     "start": "tsx --env-file-if-exists=.env src/index.ts",
+    "start:app": "pnpm -C ../web build && cross-env SERVE_WEB=1 tsx --env-file-if-exists=.env src/index.ts",
     "typecheck": "tsc -p .",
     "test": "vitest run"
   },

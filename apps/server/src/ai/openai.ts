@@ -33,7 +33,8 @@ export function classifyError(err: unknown, aborted: boolean): { reason: AiFailu
   }
   const status = (err as { status?: number })?.status;
   if (status === 429) return { reason: 'rate_limited', message: 'The model is rate limited.' };
-  return { reason: 'model_error', message: err instanceof Error ? err.message : 'Model error.' };
+  // The SDK's own message can name the model, the org or part of the key: keep it for the logs only.
+  return { reason: 'model_error', message: 'The AI service is unavailable right now.' };
 }
 
 /** Short diagnostic for logs: error class, HTTP status and network cause. Never request content. */
