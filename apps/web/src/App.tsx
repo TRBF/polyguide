@@ -111,6 +111,13 @@ export function App() {
     speak(text, priority);
   }, []);
 
+  // Status lines confirm an action; they fade so the screen returns to its content.
+  useEffect(() => {
+    if (!message) return;
+    const timer = window.setTimeout(() => setMessage(''), 6000);
+    return () => window.clearTimeout(timer);
+  }, [message]);
+
   const onGuidanceRouteChange = useCallback((nextRoute: Route) => setRoute(nextRoute), []);
   const guidance = useGuidance(route, profile, {
     onSpeak: onGuidanceSpeak,
@@ -684,11 +691,14 @@ export function App() {
   if (!started) {
     return (
       <div className="app-shell">
-        <main className="main-content">
+        <main className="main-content start-screen">
+          <span className="brand-mark brand-mark-large" aria-hidden="true">P</span>
+          <h1>PolyGuide</h1>
+          <p className="lead">Step-by-step directions inside the ETH main building, by voice or by touch.</p>
           <button type="button" className="button button-primary start-gate" onClick={beginApp} autoFocus>
-            Tap here to start PolyGuide
+            Start
           </button>
-          <p className="lead">PolyGuide helps you find your way inside ETH Zürich. It supplements your cane or guide dog and does not detect obstacles.</p>
+          <p className="start-note">PolyGuide supplements your cane or guide dog. It does not detect obstacles.</p>
         </main>
       </div>
     );
@@ -712,11 +722,11 @@ export function App() {
 
         {screen === 'needs' && (
           <section className="screen-panel" aria-labelledby="needs-title">
-            <h1 id="needs-title">A route that fits your needs</h1>
-            <p className="lead">Choose any combination. PolyGuide adjusts routes around the access needs you select.</p>
+            <h1 id="needs-title">What do you need?</h1>
+            <p className="lead">Choose any that apply. Routes adapt to them.</p>
             <div className="safety-notice" role="note">
               <span className="notice-icon" aria-hidden="true">!</span>
-              <p><strong>Safety notice</strong><br />{safetyNotice}</p>
+              <p>{safetyNotice}</p>
             </div>
             <fieldset className="needs-list">
               <legend>Route preferences</legend>
@@ -761,17 +771,16 @@ export function App() {
               <button className="button button-primary" type="button" onClick={() => void enableDevicePermissions()} disabled={permissionBusy}>
                 {permissionBusy ? 'Requesting permissions…' : 'Enable camera, motion and microphone'}
               </button>
-              <button className="button button-secondary" type="button" onClick={() => setScreen('where')}>Continue without permissions</button>
+              <button className="button button-secondary" type="button" onClick={() => setScreen('where')}>{permissionMessage ? 'Continue' : 'Not now'}</button>
             </div>
             {permissionMessage && <p className="form-note" role="status">{permissionMessage}</p>}
-            <div className="screen-actions"><button className="button button-secondary" type="button" onClick={() => setScreen('where')}>Continue</button></div>
           </section>
         )}
 
         {screen === 'where' && (
           <section className="screen-panel" aria-labelledby="where-title">
             <h1 id="where-title">Where are you?</h1>
-            <p className="lead">Search for your room, scan a room sign, or use GPS outdoors. Indoor GPS is not used.</p>
+            <p className="lead">Search your room, or scan the room sign next to you.</p>
             {origin && <p className="selection-card"><span className="selection-label">Starting point</span><strong>{placeLabel(origin)}</strong></p>}
             <form className="search-form" onSubmit={submitOrigin}>
               <label htmlFor="origin-search">Room or entrance</label>
@@ -803,7 +812,7 @@ export function App() {
         {screen === 'destination' && (
           <section className="screen-panel" aria-labelledby="destination-title">
             <h1 id="destination-title">Where to?</h1>
-            <p className="lead">Search rooms and points of interest in ETH Zürich’s HG building.</p>
+            <p className="lead">A room number, a name like Audimax, or a place like toilet.</p>
             {origin && <p className="route-endpoint"><span>From</span><strong>{origin.name}</strong></p>}
             {destination && <p className="selection-card"><span className="selection-label">Destination</span><strong>{placeLabel(destination)}</strong></p>}
             <form className="search-form" onSubmit={submitDestination}>
@@ -820,7 +829,7 @@ export function App() {
               </div>
             )}
             <div className="quick-destinations">
-              <h2>Popular in the demo</h2>
+              <h2>Suggestions</h2>
               <button className="quick-destination" type="button" onClick={() => { setDestinationQuery('HG F 30'); void findDestinations('HG F 30', true); }}>HG F 30 <span>Audimax</span></button>
               <button className="quick-destination" type="button" onClick={() => { setDestinationQuery('HG E 41'); void findDestinations('HG E 41', true); }}>HG E 41 <span>Seminar room</span></button>
             </div>
@@ -877,7 +886,7 @@ export function App() {
           <section className="screen-panel navigate-panel" aria-labelledby="navigate-title">
             <div className="navigate-heading-row">
               <h1 id="navigate-title">To {route.to.label ?? route.to.name}</h1>
-              <p className="nav-progress">Step {Math.min(guidance.stepIndex + 1, route.steps.length)} of {route.steps.length}</p>
+              <p className="nav-progress">Step {Math.min(guidance.stepIndex + 1, route.steps.length)} of {route.steps.length}, {Math.round(guidance.remainingTotalM)} m to go</p>
             </div>
             <ol className="step-track" aria-hidden="true">
               {route.steps.map((step) => <li key={step.index} className={step.index < guidance.stepIndex ? 'done' : step.index === guidance.stepIndex ? 'current' : ''} />)}
@@ -893,11 +902,6 @@ export function App() {
                 )}
               </div>
             </div>
-            <progress aria-label="Current step progress" max={Math.max(1, guidance.currentStep?.distanceM ?? 1)} value={Math.max(0, (guidance.currentStep?.distanceM ?? 0) - guidance.remainingStepM)} />
-            <div className="progress-row">
-              <span>{Math.round(guidance.remainingTotalM)} m to destination</span>
-              <span>{guidance.compassReliable ? 'Arrow follows your phone’s direction' : 'No compass. Arrow shows the turn'}</span>
-            </div>
             {guidance.nextStep && <p className="next-instruction">Then: {guidance.nextStep.text}</p>}
             <div className="navigation-controls" aria-label="Navigation controls">
               <button className="button button-nav" type="button" onClick={() => guidance.repeat()}>Repeat</button>
@@ -905,14 +909,13 @@ export function App() {
               <button className="button button-nav" type="button" onClick={() => guidance.whereAmI()}>Where am I?</button>
               <button className="button button-nav button-stop" type="button" onClick={() => { guidance.stop(); releaseScreenWakeLock(); setScreen('preview'); }}>Stop</button>
             </div>
-            <div className="camera-card">
-              <div className="camera-preview" aria-hidden="true">
-                {cameraFramePreview ? <img src={cameraFramePreview} alt="" /> : <span>⌖</span>}
-                {(cameraBusy || guidance.visionBusy) && <span className="camera-checking">Checking…</span>}
+            {cameraGranted && (
+              <div className="camera-card">
+                {cameraFramePreview && <img className="camera-preview" src={cameraFramePreview} alt="" />}
+                <p aria-live="polite">{cameraBusy || guidance.visionBusy ? 'Camera is checking…' : guidanceVision || guidance.lastVision?.sceneSummary || cameraMessage || 'The camera checks near each turn.'}</p>
+                <button className="button button-secondary" type="button" onClick={() => void checkCamera('user_query')} disabled={cameraBusy}>{cameraBusy ? 'Checking…' : 'Check camera'}</button>
               </div>
-              <div><strong>Camera guidance</strong><p>{cameraBusy || guidance.visionBusy ? 'Checking…' : guidance.lastVision?.sceneSummary || cameraMessage || 'The camera checks automatically near each turn.'}</p>{guidanceVision && <p className="vision-summary">{guidanceVision}</p>}</div>
-              <button className="button button-secondary" type="button" onClick={() => void checkCamera('user_query')} disabled={cameraBusy || !cameraGranted}>{cameraBusy ? 'Checking…' : 'Check camera'}</button>
-            </div>
+            )}
             <div className="sr-only" aria-live="assertive" aria-atomic="true">{liveGuidanceAnnouncement}</div>
           </section>
         )}
@@ -955,7 +958,6 @@ export function App() {
       </main>
 
       <footer className="app-footer">
-        {screen !== 'needs' && screen !== 'settings' && <button type="button" className="button button-quiet footer-back" onClick={moveBack}>Back</button>}
         <VoiceBar
           ref={voiceBarRef}
           voiceFirst={preferences.settings.voiceFirst}

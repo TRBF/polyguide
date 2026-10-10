@@ -25,6 +25,13 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
 
   onCommandRef.current = onCommand;
 
+  // The echo of what was heard is a confirmation, not content: let it fade.
+  useEffect(() => {
+    if (!transcript) return;
+    const timer = window.setTimeout(() => setTranscript(''), 4000);
+    return () => window.clearTimeout(timer);
+  }, [transcript]);
+
   useImperativeHandle(ref, () => ({
     startContinuous() {
       const recognition = recognitionRef.current;
@@ -122,26 +129,39 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
 
   return (
     <section className={`voice-bar${voiceFirst ? ' voice-bar-first' : ''}`} aria-label="Voice and text commands">
-      <div className="voice-bar-heading">
-        <strong>{listening ? 'Listening' : 'Use voice or type a command'}</strong>
-        {continuous && available && <span>Continuous listening is available when started</span>}
-      </div>
       <div className="voice-controls">
         {available && (
-          <button className="button button-mic" type="button" onClick={toggleListening} aria-pressed={listening}>
-            <span aria-hidden="true">{listening ? '■' : '🎙'}</span>
-            <span>{listening ? 'Stop listening' : continuous ? 'Start continuous listening' : 'Push to talk'}</span>
+          <button
+            className="button button-mic"
+            type="button"
+            onClick={toggleListening}
+            aria-pressed={listening}
+            aria-label={voiceFirst ? undefined : listening ? 'Stop listening' : continuous ? 'Start continuous listening' : 'Push to talk'}
+          >
+            <MicIcon listening={listening} />
+            {voiceFirst && <span>{listening ? 'Stop listening' : 'Tap and speak'}</span>}
           </button>
         )}
         <form className="command-form" onSubmit={submitText}>
-          <label className="sr-only" htmlFor="voice-command">Type a voice command</label>
-          <input id="voice-command" name="command" type="text" autoComplete="off" placeholder="Try: take me to HG F 30" />
+          <label className="sr-only" htmlFor="voice-command">Type a command</label>
+          <input id="voice-command" name="command" type="text" autoComplete="off" placeholder={listening ? 'Listening…' : 'Say or type: take me to HG F 30'} />
           <button className="button button-command" type="submit">Send</button>
         </form>
       </div>
-      {transcript && <p className="transcript" aria-live="polite">Heard: {transcript}</p>}
+      {transcript && <p className="transcript" aria-live="polite">Heard “{transcript}”</p>}
       {voiceError && <p className="form-error" role="status">{voiceError}</p>}
-      {!available && <p className="voice-help">Speech recognition is unavailable here. Type any command in the field.</p>}
+      {!available && voiceFirst && <p className="voice-help">Speech recognition is unavailable here. Type any command in the field.</p>}
     </section>
   );
 });
+
+function MicIcon({ listening }: { listening: boolean }) {
+  return listening ? (
+    <svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" /></svg>
+  ) : (
+    <svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor" stroke="none" />
+      <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+    </svg>
+  );
+}
