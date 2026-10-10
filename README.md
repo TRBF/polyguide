@@ -20,3 +20,12 @@ Accessible indoor navigation for ETH Zürich: wheelchair, blind and low-vision u
 
 ## Data
 ETH PolyMaps ArcGIS REST (public, undocumented): `https://arcgis-prd-web.ethz.ch/server/rest/services/EGDB/`. The routing network lives in `EGDB_Public_Network` (Pathways, Transitions, Landmarks). The reference router is `Hosted_Public_Network/NAServer/Route`, which already has a Wheelchair travel mode. Snapshot it once and commit; never call it at runtime. Contact: polymaps@ethz.ch.
+
+## Run
+```bash
+corepack enable          # provides pnpm (pinned in package.json)
+pnpm install
+pnpm dev:server          # Hono on :8787 (USE_MOCK=1 pnpm dev:server for fixtures)
+pnpm dev:web             # Vite on https://localhost:5173, proxies /api → :8787
+pnpm -r typecheck        # before every commit
+```

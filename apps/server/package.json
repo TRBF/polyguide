@@ -1,0 +1,23 @@
+{
+  "name": "@polyguide/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "dev:mock": "USE_MOCK=1 tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.4",
+    "@polyguide/routing": "workspace:*",
+    "@polyguide/shared": "workspace:*",
+    "fuse.js": "^7.5.0",
+    "hono": "^4.13.13",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
+  }
+}
