@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "fetch:eth": "tsx fetch-eth.ts",
+    "fetch:room-photos": "tsx fetch-room-photos.ts",
     "build:graph": "tsx build-graph.ts",
     "route": "tsx route-cli.ts",
     "typecheck": "tsc -p ."

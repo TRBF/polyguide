@@ -2,6 +2,7 @@
 import { Hono } from 'hono';
 import { agentRoutes } from './agent';
 import { intentRoutes } from './intent';
+import { locateRoomRoutes } from './locateRoom';
 import { realtimeRoutes } from './realtime';
 import { sttRoutes } from './stt';
 import { visionRoutes } from './vision';
@@ -12,3 +13,4 @@ aiRoutes.route('/', intentRoutes);
 aiRoutes.route('/', sttRoutes);
 aiRoutes.route('/', agentRoutes);
 aiRoutes.route('/', realtimeRoutes);
+aiRoutes.route('/', locateRoomRoutes);

@@ -27,7 +27,8 @@ export function describePosition(req: PositionRequest): PositionInfo {
   const place = req.placeId ? getPlace(req.placeId) : undefined;
   const point = place ?? (req.lat != null && req.lon != null ? { lat: req.lat, lon: req.lon } : undefined);
   const levelId = place?.levelId ?? req.levelId;
-  if (!point || !levelId) return { ok: false, message: 'Send a placeId, or lat, lon and levelId.' };
+  if ((!point || !levelId) && req.gps) return gpsCandidates(req.gps);
+  if (!point || !levelId) return { ok: false, message: 'Send a placeId, lat, lon and levelId, or gps.' };
 
   const here = g.xy(point);
   const placeNode = place ? g.nodes.get(place.nodeId) : undefined;
@@ -114,6 +115,28 @@ function walkableDirections(startId: string, levelId: string): { bearingDeg: num
     if (!out.some((o) => Math.abs(((o.bearingDeg - e.bearingDeg + 540) % 360) - 180) < 30)) out.push(e);
   }
   return out;
+}
+
+/**
+ * Nothing known but a GPS fix (indoors it is ±20-60 m): the entrances and room doors within its radius on any
+ * floor, as candidates for the agent to ask about ("are you near the main entrance or in the library?").
+ */
+function gpsCandidates(gps: { lat: number; lon: number; accuracyM: number }): PositionInfo {
+  const g = getGraph();
+  const here = g.xy(gps);
+  const radius = Math.max(25, Math.min(gps.accuracyM, 80));
+  const seen = new Set<string>();
+  const nearby: NearbyPlace[] = g.places
+    .filter((p) => p.kind !== 'poi' || /toilet|elevator|stairs|cafe|food|library/i.test(`${p.label ?? ''} ${p.name}`))
+    .map((p) => ({ p, d: dist2D(here, g.xy(p)) }))
+    .filter((x) => x.d <= radius)
+    // Entrances first: a GPS fix good enough to use usually means the user is at the building's edge.
+    .sort((a, b) => Number(b.p.kind === 'entrance') - Number(a.p.kind === 'entrance') || a.d - b.d)
+    .filter(({ p }) => !seen.has(p.name) && Boolean(seen.add(p.name)))
+    .slice(0, MAX_NEARBY)
+    .map(({ p, d }) => ({ placeId: p.id, name: p.name, ...(p.label ? { label: p.label } : {}), kind: p.kind, ...(p.useType ? { useType: p.useType } : {}), distM: Math.round(d), bearingDeg: Math.round(bearingDeg(here, g.xy(p))) }));
+  if (!nearby.length) return { ok: false, message: 'No place of HG within the GPS radius.' };
+  return { ok: true, levelId: '', floor: 'unknown', nodeId: '', snapM: Math.round(gps.accuracyM), nearby, paths: [], fromGps: true };
 }
 
 export const positionRoutes = new Hono();

@@ -29,6 +29,11 @@ export interface RealtimeAgentOptions {
   onStatus?: (status: AgentStatus) => void;
   onUserTranscript?: (text: string) => void;
   onAssistantTranscript?: (text: string) => void;
+  /** Live captions: the text so far, as it streams (user speech and the model's answer). */
+  onUserPartial?: (textSoFar: string) => void;
+  onAssistantPartial?: (textSoFar: string) => void;
+  /** A camera frame to attach to each user turn, so the model always sees what is in front of the phone. */
+  frame?: () => Promise<{ jpegBase64: string; caption: string } | null>;
   onError?: (message: string) => void;
 }
 
@@ -56,6 +61,8 @@ export class RealtimeAgent {
   private closed = false;
   private muted = false;
   private announcing: string | null = null;
+  private frameIds: string[] = [];
+  private partial = new Map<string, string>();
 
   constructor(private opts: RealtimeAgentOptions) {}
 
@@ -150,7 +157,13 @@ export class RealtimeAgent {
     if (!this.connected) return;
     this.cancelSpeech();
     this.send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } });
-    void this.reply();
+    void this.reply(true);
+  }
+
+  /** Context for the model without a reply, e.g. "the camera read the sign HG F 33". */
+  note(text: string) {
+    if (!this.connected) return;
+    this.send({ type: 'conversation.item.create', item: { type: 'message', role: 'system', content: [{ type: 'input_text', text }] } });
   }
 
   /** Speak an app announcement word for word (queued behind the current reply). */
@@ -185,18 +198,27 @@ export class RealtimeAgent {
     this.setStatus('error');
   }
 
-  /** Add the live state (replacing the last one), then ask for the model's reply. */
-  private async reply() {
-    await this.pushState();
+  /** Add the live state (replacing the last one) and, for a user turn, a camera frame; then ask for the reply. */
+  private async reply(userTurn = false) {
+    await this.pushState(userTurn);
     this.request({ kind: 'reply' });
   }
 
-  private async pushState() {
-    let state: string;
-    try {
-      state = await this.opts.liveState();
-    } catch {
-      state = '[Live state] unavailable right now.';
+  private async pushState(withFrame = false) {
+    // Both in parallel: the frame must not delay the answer.
+    const [state, frame] = await Promise.all([
+      Promise.resolve().then(() => this.opts.liveState()).catch(() => '[Live state] unavailable right now.'),
+      withFrame && this.opts.frame ? this.opts.frame().catch(() => null) : Promise.resolve(null),
+    ]);
+    if (frame) {
+      const frameId = `cam_${Date.now().toString(36)}_${++this.seq}`;
+      this.send({
+        type: 'conversation.item.create',
+        item: { id: frameId, type: 'message', role: 'user', content: [{ type: 'input_text', text: frame.caption }, { type: 'input_image', image_url: `data:image/jpeg;base64,${frame.jpegBase64}`, detail: 'low' }] },
+      });
+      // Older frames only cost tokens: keep the last two.
+      this.frameIds.push(frameId);
+      while (this.frameIds.length > 2) this.send({ type: 'conversation.item.delete', item_id: this.frameIds.shift() });
     }
     const id = `live_${Date.now().toString(36)}_${++this.seq}`;
     if (this.lastStateId) this.send({ type: 'conversation.item.delete', item_id: this.lastStateId });
@@ -248,9 +270,20 @@ export class RealtimeAgent {
         this.setStatus('hearing');
         return;
       case 'input_audio_buffer.committed':
-        void this.reply();
+        void this.reply(true);
         return;
+      case 'conversation.item.input_audio_transcription.delta':
+      case 'response.output_audio_transcript.delta': {
+        const user = e.type.startsWith('conversation');
+        const key = `${user ? 'u' : 'a'}:${String(user ? e.item_id : e.response_id)}`;
+        const text = (this.partial.get(key) ?? '') + String(e.delta ?? '');
+        this.partial.set(key, text);
+        if (user) this.opts.onUserPartial?.(text.trim());
+        else this.opts.onAssistantPartial?.(text.trim());
+        return;
+      }
       case 'conversation.item.input_audio_transcription.completed': {
+        this.partial.delete(`u:${String(e.item_id)}`);
         const t = String(e.transcript ?? '').trim();
         if (t) this.opts.onUserTranscript?.(t);
         return;
@@ -263,6 +296,7 @@ export class RealtimeAgent {
         if (!this.responseActive) this.setStatus('listening');
         return;
       case 'response.output_audio_transcript.done': {
+        this.partial.delete(`a:${String(e.response_id)}`);
         const t = String(e.transcript ?? '').trim();
         if (t) this.opts.onAssistantTranscript?.(t);
         return;

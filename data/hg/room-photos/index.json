@@ -1,0 +1,1030 @@
+{
+ "source": "https://ethz.ch/staffnet/en/service/rooms-and-buildings/roominfo.html",
+ "fetchedAt": "2026-10-10T20:30:41.479Z",
+ "rooms": [
+  {
+   "name": "HG D 1.1",
+   "type": "Lecture hall",
+   "seats": 158,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 165.14,
+   "heightM": 4.5,
+   "photos": [
+    "HG_D_1.1_1.jpg",
+    "HG_D_1.1_2.jpg",
+    "HG_D_1.1_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 1.2",
+   "type": "Lecture hall",
+   "seats": 158,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 163.61,
+   "heightM": 4.5,
+   "photos": [
+    "HG_D_1.2_1.jpg",
+    "HG_D_1.2_2.jpg",
+    "HG_D_1.2_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 3.1",
+   "type": "Seminars / Courses",
+   "seats": 28,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 56.97,
+   "heightM": 2.9,
+   "photos": [
+    "HG_D_3.1_1.jpg",
+    "HG_D_3.1_2.jpg",
+    "HG_D_3.1_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 3.2",
+   "type": "Lecture hall",
+   "seats": 90,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 109.98,
+   "heightM": 4,
+   "photos": [
+    "HG_D_3.2_1.jpg",
+    "HG_D_3.2_2.jpg",
+    "HG_D_3.2_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 3.3",
+   "type": "Seminars / Courses",
+   "seats": 28,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 58.26,
+   "heightM": 2.9,
+   "photos": [
+    "HG_D_3.3_1.jpg",
+    "HG_D_3.3_2.jpg",
+    "HG_D_3.3_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 5.1",
+   "type": "Seminars / Courses",
+   "seats": 28,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 57.43,
+   "heightM": 2.9,
+   "photos": [
+    "HG_D_5.1_1.jpg",
+    "HG_D_5.1_2.jpg",
+    "HG_D_5.1_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 5.2",
+   "type": "Lecture hall",
+   "seats": 94,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 110.36,
+   "heightM": 4,
+   "photos": [
+    "HG_D_5.2_1.jpg",
+    "HG_D_5.2_2.jpg",
+    "HG_D_5.2_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 5.3",
+   "type": "Seminars / Courses",
+   "seats": 28,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 58.57,
+   "heightM": 2.9,
+   "photos": [
+    "HG_D_5.3_1.jpg",
+    "HG_D_5.3_2.jpg",
+    "HG_D_5.3_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 7.1",
+   "type": "Lecture hall",
+   "seats": 158,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 166.1,
+   "heightM": 4.5,
+   "photos": [
+    "HG_D_7.1_1.jpg",
+    "HG_D_7.1_2.jpg",
+    "HG_D_7.1_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 7.2",
+   "type": "Lecture hall",
+   "seats": 158,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 166.27,
+   "heightM": 4.5,
+   "photos": [
+    "HG_D_7.2_1.jpg",
+    "HG_D_7.2_2.jpg",
+    "HG_D_7.2_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 11",
+   "type": "Computer",
+   "seats": null,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 67.03,
+   "heightM": 3.8,
+   "photos": [
+    "HG_D_11_1.jpg",
+    "HG_D_11_2.jpg",
+    "HG_D_11_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 12",
+   "type": "Computer",
+   "seats": null,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 89.52,
+   "heightM": 3.8,
+   "photos": [
+    "HG_D_12_1.jpg",
+    "HG_D_12_2.jpg",
+    "HG_D_12_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 16.2",
+   "type": "Lecture hall",
+   "seats": 80,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 119.01,
+   "heightM": 3.7,
+   "photos": [
+    "HG_D_16.2_1.jpg",
+    "HG_D_16.2_2.jpg",
+    "HG_D_16.2_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 22",
+   "type": "Meeting room",
+   "seats": 18,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 99.73,
+   "heightM": 3.55,
+   "photos": [
+    "HG_D_22_1.jpg",
+    "HG_D_22_2.jpg",
+    "HG_D_22_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 28.2",
+   "type": "Exhibition space",
+   "seats": null,
+   "seating": "",
+   "floorShape": "flat",
+   "floorAreaM2": 266.1,
+   "heightM": 2.7,
+   "photos": [
+    "HG_D_28.2_1.jpg",
+    "HG_D_28.2_2.jpg",
+    "HG_D_28.2_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 30.0065",
+   "type": "Exhibition space",
+   "seats": null,
+   "seating": "",
+   "floorShape": "flat",
+   "floorAreaM2": 211.86,
+   "heightM": 2.75,
+   "photos": [
+    "HG_D_30.0065_1.jpg",
+    "HG_D_30.0065_2.jpg",
+    "HG_D_30.0065_3.jpg"
+   ]
+  },
+  {
+   "name": "HG D 30.0075",
+   "type": "Exhibition space",
+   "seats": null,
+   "seating": "",
+   "floorShape": "flat",
+   "floorAreaM2": 212.46,
+   "heightM": 2.75,
+   "photos": [
+    "HG_D_30.0075_1.jpg",
+    "HG_D_30.0075_2.jpg",
+    "HG_D_30.0075_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 1.1",
+   "type": "Lecture hall",
+   "seats": 172,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 175.15,
+   "heightM": 4.3,
+   "photos": [
+    "HG_E_1.1_1.jpg",
+    "HG_E_1.1_2.jpg",
+    "HG_E_1.1_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 1.2",
+   "type": "Lecture hall",
+   "seats": 172,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 174.75,
+   "heightM": 4.3,
+   "photos": [
+    "HG_E_1.2_1.jpg",
+    "HG_E_1.2_2.jpg",
+    "HG_E_1.2_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 3",
+   "type": "Lecture hall",
+   "seats": 243,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 248.95,
+   "heightM": 6.1,
+   "photos": [
+    "HG_E_3_1.jpg",
+    "HG_E_3_2.jpg",
+    "HG_E_3_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 4",
+   "type": "Exhibition space",
+   "seats": null,
+   "seating": "",
+   "floorShape": "flat",
+   "floorAreaM2": 267.8,
+   "heightM": 22.15,
+   "photos": [
+    "HG_E_4_1.jpg",
+    "HG_E_4_2.jpg",
+    "HG_E_4_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 5",
+   "type": "Lecture hall",
+   "seats": 255,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 248.44,
+   "heightM": 6.1,
+   "photos": [
+    "HG_E_5_1.jpg",
+    "HG_E_5_2.jpg",
+    "HG_E_5_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 7",
+   "type": "Lecture hall",
+   "seats": 346,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 369.19,
+   "heightM": 3.95,
+   "photos": [
+    "HG_E_7_1.jpg",
+    "HG_E_7_2.jpg",
+    "HG_E_7_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 19",
+   "type": "Computer",
+   "seats": null,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 121.2,
+   "heightM": 4.25,
+   "photos": [
+    "HG_E_19_1.jpg",
+    "HG_E_19_2.jpg",
+    "HG_E_19_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 21",
+   "type": "Seminars / Courses",
+   "seats": 46,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 78.53,
+   "heightM": 4.35,
+   "photos": [
+    "HG_E_21_1.jpg",
+    "HG_E_21_2.jpg",
+    "HG_E_21_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 22",
+   "type": "Seminars / Courses",
+   "seats": 48,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 73.16,
+   "heightM": 4.65,
+   "photos": [
+    "HG_E_22_1.jpg",
+    "HG_E_22_2.jpg",
+    "HG_E_22_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 23",
+   "type": "Seminars / Courses",
+   "seats": 38,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 73.25,
+   "heightM": 4.65,
+   "photos": [
+    "HG_E_23_1.jpg",
+    "HG_E_23_2.jpg",
+    "HG_E_23_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 26.1",
+   "type": "Computer",
+   "seats": null,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 118.1,
+   "heightM": 4.2,
+   "photos": [
+    "HG_E_26.1_1.jpg",
+    "HG_E_26.1_2.jpg",
+    "HG_E_26.1_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 26.3",
+   "type": "Computer",
+   "seats": null,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 110.4,
+   "heightM": 4.2,
+   "photos": [
+    "HG_E_26.3_1.jpg",
+    "HG_E_26.3_2.jpg",
+    "HG_E_26.3_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 27",
+   "type": "Computer",
+   "seats": null,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 184.64,
+   "heightM": 2.3,
+   "photos": [
+    "HG_E_27_1.jpg",
+    "HG_E_27_2.jpg",
+    "HG_E_27_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 30.0015",
+   "type": "Exhibition space",
+   "seats": null,
+   "seating": "",
+   "floorShape": "flat",
+   "floorAreaM2": 59.86,
+   "heightM": 6.64,
+   "photos": [
+    "HG_E_30.0015_1.jpg",
+    "HG_E_30.0015_2.jpg",
+    "HG_E_30.0015_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 30.0025",
+   "type": "Exhibition space",
+   "seats": null,
+   "seating": "",
+   "floorShape": "flat",
+   "floorAreaM2": 79.77,
+   "heightM": 6.66,
+   "photos": [
+    "HG_E_30.0025_1.jpg",
+    "HG_E_30.0025_2.jpg",
+    "HG_E_30.0025_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 30.0065",
+   "type": "Exhibition space",
+   "seats": null,
+   "seating": "",
+   "floorShape": "flat",
+   "floorAreaM2": 138.63,
+   "heightM": 4.8,
+   "photos": [
+    "HG_E_30.0065_1.jpg",
+    "HG_E_30.0065_2.jpg",
+    "HG_E_30.0065_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 30.0075",
+   "type": "Exhibition space",
+   "seats": null,
+   "seating": "",
+   "floorShape": "flat",
+   "floorAreaM2": 139.83,
+   "heightM": 4.8,
+   "photos": [
+    "HG_E_30.0075_1.jpg",
+    "HG_E_30.0075_2.jpg",
+    "HG_E_30.0075_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 33.1",
+   "type": "Seminars / Courses",
+   "seats": 50,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 81.86,
+   "heightM": 4.25,
+   "photos": [
+    "HG_E_33.1_1.jpg",
+    "HG_E_33.1_2.jpg",
+    "HG_E_33.1_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 33.3",
+   "type": "Seminars / Courses",
+   "seats": 50,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 84.64,
+   "heightM": 4.25,
+   "photos": [
+    "HG_E_33.3_1.jpg",
+    "HG_E_33.3_2.jpg",
+    "HG_E_33.3_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 33.5",
+   "type": "Seminars / Courses",
+   "seats": 40,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 60.22,
+   "heightM": 4.25,
+   "photos": [
+    "HG_E_33.5_1.jpg",
+    "HG_E_33.5_2.jpg",
+    "HG_E_33.5_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 41",
+   "type": "Seminars / Courses",
+   "seats": 50,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 116.63,
+   "heightM": 4.25,
+   "photos": [
+    "HG_E_41_1.jpg",
+    "HG_E_41_2.jpg",
+    "HG_E_41_3.jpg"
+   ]
+  },
+  {
+   "name": "HG E 42",
+   "type": "Meeting room",
+   "seats": 32,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 83.63,
+   "heightM": 4.6,
+   "photos": [
+    "HG_E_42_1.jpg",
+    "HG_E_42_2.jpg",
+    "HG_E_42_3.jpg"
+   ]
+  },
+  {
+   "name": "HG EO 30.0065",
+   "type": "Exhibition space",
+   "seats": null,
+   "seating": "",
+   "floorShape": "flat",
+   "floorAreaM2": 138.63,
+   "heightM": 2.3,
+   "photos": [
+    "HG_EO_30.0065_1.jpg",
+    "HG_EO_30.0065_2.jpg",
+    "HG_EO_30.0065_3.jpg"
+   ]
+  },
+  {
+   "name": "HG EO 30.0075",
+   "type": "Exhibition space",
+   "seats": null,
+   "seating": "",
+   "floorShape": "flat",
+   "floorAreaM2": 139.83,
+   "heightM": 2.3,
+   "photos": [
+    "HG_EO_30.0075_1.jpg",
+    "HG_EO_30.0075_2.jpg",
+    "HG_EO_30.0075_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 1",
+   "type": "Lecture hall",
+   "seats": 346,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 363.68,
+   "heightM": 3.95,
+   "photos": [
+    "HG_F_1_1.jpg",
+    "HG_F_1_2.jpg",
+    "HG_F_1_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 3",
+   "type": "Lecture hall",
+   "seats": 279,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 253.4,
+   "heightM": 2.83,
+   "photos": [
+    "HG_F_3_1.jpg",
+    "HG_F_3_2.jpg",
+    "HG_F_3_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 5",
+   "type": "Lecture hall",
+   "seats": 273,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 254.74,
+   "heightM": 2.83,
+   "photos": [
+    "HG_F_5_1.jpg",
+    "HG_F_5_2.jpg",
+    "HG_F_5_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 7",
+   "type": "Lecture hall",
+   "seats": 346,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 361.79,
+   "heightM": 3.95,
+   "photos": [
+    "HG_F_7_1.jpg",
+    "HG_F_7_2.jpg",
+    "HG_F_7_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 26.1",
+   "type": "Seminars / Courses",
+   "seats": 40,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 61.33,
+   "heightM": 4.35,
+   "photos": [
+    "HG_F_26.1_1.jpg",
+    "HG_F_26.1_2.jpg",
+    "HG_F_26.1_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 26.3",
+   "type": "Seminars / Courses",
+   "seats": 46,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 85.15,
+   "heightM": 4.35,
+   "photos": [
+    "HG_F_26.3_1.jpg",
+    "HG_F_26.3_2.jpg",
+    "HG_F_26.3_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 26.5",
+   "type": "Seminars / Courses",
+   "seats": 46,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 82.87,
+   "heightM": 4.35,
+   "photos": [
+    "HG_F_26.5_1.jpg",
+    "HG_F_26.5_2.jpg",
+    "HG_F_26.5_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 30",
+   "type": "Lecture hall",
+   "seats": 421,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 349.9,
+   "heightM": 6.3,
+   "photos": [
+    "HG_F_30_1.jpg",
+    "HG_F_30_2.jpg",
+    "HG_F_30_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 30.0029",
+   "type": "Exhibition space",
+   "seats": null,
+   "seating": "",
+   "floorShape": "flat",
+   "floorAreaM2": 82.3,
+   "heightM": 4.63,
+   "photos": [
+    "HG_F_30.0029_1.jpg",
+    "HG_F_30.0029_2.jpg",
+    "HG_F_30.0029_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 30.0053",
+   "type": "Exhibition space",
+   "seats": null,
+   "seating": "",
+   "floorShape": "flat",
+   "floorAreaM2": 15.18,
+   "heightM": 4.98,
+   "photos": [
+    "HG_F_30.0053_1.jpg",
+    "HG_F_30.0053_2.jpg",
+    "HG_F_30.0053_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 33.1",
+   "type": "Meeting room",
+   "seats": 42,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 82.79,
+   "heightM": 4.35,
+   "photos": [
+    "HG_F_33.1_1.jpg",
+    "HG_F_33.1_2.jpg",
+    "HG_F_33.1_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 33.2",
+   "type": "Meeting room",
+   "seats": 14,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 27.75,
+   "heightM": 4.35,
+   "photos": [
+    "HG_F_33.2_1.jpg",
+    "HG_F_33.2_2.jpg",
+    "HG_F_33.2_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 33.3",
+   "type": "Meeting room",
+   "seats": 14,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 27.86,
+   "heightM": 4.35,
+   "photos": [
+    "HG_F_33.3_1.jpg",
+    "HG_F_33.3_2.jpg",
+    "HG_F_33.3_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 33.4",
+   "type": "Meeting room",
+   "seats": 14,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 27.88,
+   "heightM": 4.35,
+   "photos": [
+    "HG_F_33.4_1.jpg",
+    "HG_F_33.4_2.jpg",
+    "HG_F_33.4_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 33.5",
+   "type": "Meeting room",
+   "seats": 36,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 61.42,
+   "heightM": 4.35,
+   "photos": [
+    "HG_F_33.5_1.jpg",
+    "HG_F_33.5_2.jpg",
+    "HG_F_33.5_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 50.3",
+   "type": "Meeting room",
+   "seats": 17,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 56.35,
+   "heightM": 4.96,
+   "photos": [
+    "HG_F_50.3_1.jpg",
+    "HG_F_50.3_2.jpg",
+    "HG_F_50.3_3.jpg"
+   ]
+  },
+  {
+   "name": "HG F 60.0029",
+   "type": "Exhibition space",
+   "seats": null,
+   "seating": "",
+   "floorShape": "flat",
+   "floorAreaM2": 127.24,
+   "heightM": 4.95,
+   "photos": [
+    "HG_F_60.0029_1.jpg",
+    "HG_F_60.0029_2.jpg",
+    "HG_F_60.0029_3.jpg"
+   ]
+  },
+  {
+   "name": "HG G 1",
+   "type": "Computer",
+   "seats": null,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 373.92,
+   "heightM": 4.33,
+   "photos": [
+    "HG_G_1_1.jpg",
+    "HG_G_1_2.jpg",
+    "HG_G_1_3.jpg"
+   ]
+  },
+  {
+   "name": "HG G 3",
+   "type": "Lecture hall",
+   "seats": 278,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 260.17,
+   "heightM": 4.3,
+   "photos": [
+    "HG_G_3_1.jpg",
+    "HG_G_3_2.jpg",
+    "HG_G_3_3.jpg"
+   ]
+  },
+  {
+   "name": "HG G 5",
+   "type": "Lecture hall",
+   "seats": 279,
+   "seating": "fixed",
+   "floorShape": "graded",
+   "floorAreaM2": 257.92,
+   "heightM": 4.2,
+   "photos": [
+    "HG_G_5_1.jpg",
+    "HG_G_5_2.jpg",
+    "HG_G_5_3.jpg"
+   ]
+  },
+  {
+   "name": "HG G 19.1",
+   "type": "Seminars / Courses",
+   "seats": 58,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 122.33,
+   "heightM": 4.25,
+   "photos": [
+    "HG_G_19.1_1.jpg",
+    "HG_G_19.1_2.jpg",
+    "HG_G_19.1_3.jpg"
+   ]
+  },
+  {
+   "name": "HG G 19.2",
+   "type": "Seminars / Courses",
+   "seats": 36,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 83.32,
+   "heightM": 4.1,
+   "photos": [
+    "HG_G_19.2_1.jpg",
+    "HG_G_19.2_2.jpg",
+    "HG_G_19.2_3.jpg"
+   ]
+  },
+  {
+   "name": "HG G 26.1",
+   "type": "Seminars / Courses",
+   "seats": 50,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 89.05,
+   "heightM": 4.05,
+   "photos": [
+    "HG_G_26.1_1.jpg",
+    "HG_G_26.1_2.jpg",
+    "HG_G_26.1_3.jpg"
+   ]
+  },
+  {
+   "name": "HG G 26.3",
+   "type": "Seminars / Courses",
+   "seats": 30,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 56.43,
+   "heightM": 4.05,
+   "photos": [
+    "HG_G_26.3_1.jpg",
+    "HG_G_26.3_2.jpg",
+    "HG_G_26.3_3.jpg"
+   ]
+  },
+  {
+   "name": "HG G 26.5",
+   "type": "Seminars / Courses",
+   "seats": 50,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 82.4,
+   "heightM": 4.05,
+   "photos": [
+    "HG_G_26.5_1.jpg",
+    "HG_G_26.5_2.jpg",
+    "HG_G_26.5_3.jpg"
+   ]
+  },
+  {
+   "name": "HG G 30.006",
+   "type": "Exhibition space",
+   "seats": null,
+   "seating": "",
+   "floorShape": "flat",
+   "floorAreaM2": 21.96,
+   "heightM": 5.06,
+   "photos": [
+    "HG_G_30.006_1.jpg",
+    "HG_G_30.006_2.jpg",
+    "HG_G_30.006_3.jpg"
+   ]
+  },
+  {
+   "name": "HG G 43",
+   "type": "Seminars / Courses",
+   "seats": 30,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 83.95,
+   "heightM": 4.33,
+   "photos": []
+  },
+  {
+   "name": "HG G 60",
+   "type": "Multipurpose room",
+   "seats": 95,
+   "seating": "fixed",
+   "floorShape": "flat",
+   "floorAreaM2": 250.21,
+   "heightM": 8.85,
+   "photos": [
+    "HG_G_60_1.jpg",
+    "HG_G_60_2.jpg",
+    "HG_G_60_3.jpg"
+   ]
+  },
+  {
+   "name": "HG G 60.0025",
+   "type": "Exhibition space",
+   "seats": null,
+   "seating": "",
+   "floorShape": "flat",
+   "floorAreaM2": 53.51,
+   "heightM": 5.08,
+   "photos": [
+    "HG_G_60.0025_1.jpg",
+    "HG_G_60.0025_2.jpg",
+    "HG_G_60.0025_3.jpg"
+   ]
+  },
+  {
+   "name": "HG J 29.7",
+   "type": "Meeting room",
+   "seats": 16,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 59.45,
+   "heightM": 2.35,
+   "photos": []
+  },
+  {
+   "name": "HG J 31.5",
+   "type": "Meeting room",
+   "seats": 16,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 44.06,
+   "heightM": 2.4,
+   "photos": []
+  },
+  {
+   "name": "HG K 30.1",
+   "type": "Seminars / Courses",
+   "seats": 40,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 262.42,
+   "heightM": 9.8,
+   "photos": [
+    "HG_K_30.1_1.jpg",
+    "HG_K_30.1_2.jpg",
+    "HG_K_30.1_3.jpg"
+   ]
+  },
+  {
+   "name": "HG KO 33",
+   "type": "Computer",
+   "seats": null,
+   "seating": "variable",
+   "floorShape": "flat",
+   "floorAreaM2": 347.37,
+   "heightM": 5,
+   "photos": [
+    "HG_KO_33_1.jpg",
+    "HG_KO_33_2.jpg",
+    "HG_KO_33_3.jpg"
+   ]
+  }
+ ]
+}

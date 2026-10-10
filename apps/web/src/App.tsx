@@ -6,6 +6,7 @@ import {
   type IntentRequest,
   type Need,
   type Place,
+  type LocateRoomResponse,
   type PositionInfo,
   type ResolveTripResponse,
   type RouteResult,
@@ -15,15 +16,15 @@ import {
 } from '@polyguide/shared';
 import { api } from './api';
 import { captureRoomSignFrame, releaseScreenWakeLock, requestAppPermissions, requestScreenWakeLock } from './camera';
-import { CameraBackdrop, RouteSheet } from './views';
+import { CameraBackdrop, CameraPeek, RouteSheet } from './views';
 import { VoiceBar, type VoiceBarHandle } from './VoiceBar';
 import { configureSpeech, isSpeaking, onSpeakingChange, speak, stopSpeech } from './voice/tts';
 import { VoicePicker } from './voice/VoicePicker';
 import { answerForScreen, parseAppCommand, parseCommand } from './voice/commands';
-import { clearRecents, hasSavedPreferences, loadPreferences, recentPlaces, rememberPlace, savePreferences, type Preferences } from './storage';
+import { clearRecents, hasSavedPreferences, loadLastFix, loadPreferences, recentPlaces, rememberPlace, saveLastFix, savePreferences, type Preferences } from './storage';
 import { useGuidance } from './guidance';
 import { PATTERN_LEGEND, buzz, stepPattern } from './guidance/haptics';
-import { captureFrame } from './guidance/camera';
+import { captureFrame, holdCamera, isCameraActive, startCamera } from './guidance/camera';
 import { isVerticalStep } from './guidance/tracker';
 import { requestSensorPermissions } from './sensorPermissions';
 import { RealtimeAgent, type AgentStatus, type ToolResult } from './realtime/RealtimeAgent';
@@ -238,7 +239,14 @@ export function App() {
   const hapticsRef = useRef(preferences.settings.haptics);
   hapticsRef.current = preferences.settings.haptics;
   /** Where the user really is, from a sign, their word, or the end of a route. Drives the agent's live state. */
-  const [fix, setFix] = useState<Fix | null>(null);
+  const [fix, setFix] = useState<Fix | null>(() => {
+    // Where the user was last time on this phone: a weak hint until something confirms it.
+    const last = loadLastFix();
+    return last ? { place: last.place, source: 'remembered', at: last.at } : null;
+  });
+  useEffect(() => {
+    if (fix && fix.source !== 'remembered') saveLastFix(fix.place, fix.at);
+  }, [fix]);
   /** The realtime voice agent (speech to speech); null = the older recognizer + /api/agent pipeline. */
   const rtRef = useRef<RealtimeAgent | null>(null);
   const [rtStatus, setRtStatus] = useState<AgentStatus>('off');
@@ -343,6 +351,10 @@ export function App() {
       },
       onUserTranscript: (text) => setHeard(text),
       onAssistantTranscript: (text) => setMessage(text),
+      // Captions follow the voice as it speaks, not only when the answer is finished.
+      onUserPartial: (text) => setHeard(text),
+      onAssistantPartial: (text) => setMessage(text),
+      frame: () => turnFrameRef.current(),
       onError: (error) => {
         rtRef.current = null;
         rtFailedAt.current = Date.now();
@@ -1386,9 +1398,10 @@ export function App() {
 
   /** /api/position for the estimate, cached until the estimate moves ~2 m or changes floor. */
   async function positionInfo(request: ReturnType<typeof currentEstimate>['request']): Promise<PositionInfo | null> {
-    if (!request.placeId && request.lat == null) return null;
     const gps = sensors.freshGps();
-    const key = request.placeId ?? `${request.levelId}:${request.lat!.toFixed(5)}:${request.lon!.toFixed(5)}`;
+    if (!request.placeId && request.lat == null && !gps) return null;
+    const key = request.placeId
+      ?? (request.lat != null ? `${request.levelId}:${request.lat.toFixed(5)}:${request.lon!.toFixed(5)}` : `gps:${gps!.lat.toFixed(4)}:${gps!.lon.toFixed(4)}:${Math.round(gps!.accuracyM / 10)}`);
     const cached = positionCache.current;
     if (cached?.key === key) return cached.info;
     try {
@@ -1473,9 +1486,47 @@ export function App() {
         }
       }
 
+      case 'identify_room': {
+        let imageJpegBase64: string;
+        try {
+          imageJpegBase64 = await captureFrame(1024, 0.7);
+        } catch (error) {
+          return { output: { ok: false, error: `Camera unavailable: ${error instanceof Error ? error.message : 'unknown error'}.` } };
+        }
+        setCameraFramePreview(`data:image/jpeg;base64,${imageJpegBase64}`);
+        const est = currentEstimate();
+        const near = est.confidence === 'none' ? {} : est.request;
+        const candidates = Array.isArray(args.candidates) ? (args.candidates as unknown[]).map(String).filter(Boolean) : undefined;
+        const roomType = typeof args.room_type === 'string' && args.room_type !== 'unknown' ? args.room_type : undefined;
+        const res = await fetch(API.locateRoom, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ imageJpegBase64, ...near, ...(roomType ? { roomType } : {}), ...(candidates?.length ? { candidates } : {}) }),
+        }).then((r) => r.json() as Promise<LocateRoomResponse>).catch(() => ({ ok: false as const, reason: 'model_error' as const, message: 'The room check failed.' }));
+        if (!res.ok) return { output: { ok: false, error: res.message } };
+        const set = res.match ? [res.match, ...res.lookAlikes] : [];
+        return {
+          output: {
+            ok: true,
+            inside_a_photographed_room: res.insideRoom,
+            match: res.match?.name ?? null,
+            set_position_place: res.match?.placeName ?? null,
+            confidence: res.confidence,
+            look_alikes: res.lookAlikes.map((r) => r.name),
+            compared_with: res.candidates.map((r) => r.name),
+            reason: res.reason,
+            advice: res.confidence >= 0.6
+              ? `Confident. Call set_position with place "${res.match!.placeName}", evidence "photo".`
+              : res.match
+                ? `Not sure: it is one of ${set.map((r) => r.name).join(', ')} (identical rooms look the same). Ask the user for the number on the door, or look at the door sign, then set_position.`
+                : 'Not one of the photographed rooms (only lecture, seminar, computer and meeting rooms have photos; corridors do not). Use room signs or ask.',
+          },
+        };
+      }
+
       case 'set_position': {
         const text = String(args.place ?? '').trim();
-        const evidence = args.evidence === 'user' ? 'user' : 'sign';
+        const evidence = args.evidence === 'user' ? 'user' : args.evidence === 'photo' ? 'photo' : 'sign';
         const distanceM = Number(args.distance_m) || 0;
         const levelHint = currentEstimate().request.levelId ?? fix?.place.levelId;
         const loc = await api.localize({ roomText: text, levelHint });
@@ -1598,8 +1649,67 @@ export function App() {
     }
   }
 
+  /** A small frame for every user turn, so the agent always sees what is in front of the phone. */
+  async function turnFrame(): Promise<{ jpegBase64: string; caption: string } | null> {
+    if (!cameraGranted) return null;
+    if (!isCameraActive()) {
+      startCamera().catch(() => undefined); // ready for the next turn; never delay this one
+      return null;
+    }
+    const jpegBase64 = await captureFrame(640, 0.6);
+    const h = sensors.heading();
+    const facing = h.deg == null ? 'direction unknown' : `phone points ${Math.round(h.deg)}° (${compassName(h.deg)})`;
+    return { jpegBase64, caption: `[Camera, automatic] What the rear camera sees as the user speaks (${facing}). Use it if it helps; do not describe it unprompted.` };
+  }
+
   const liveStateRef = useRef(buildLiveState);
   liveStateRef.current = buildLiveState;
+  const turnFrameRef = useRef(turnFrame);
+  turnFrameRef.current = turnFrame;
+  const estimateRef = useRef(currentEstimate);
+  estimateRef.current = currentEstimate;
+  const screenRef = useRef(screen);
+  screenRef.current = screen;
+
+  // While the conversational voice is on, the camera stays open so the agent can see at any moment.
+  useEffect(() => {
+    if (!rtActive || !cameraGranted) return;
+    holdCamera(true);
+    startCamera().catch(() => undefined);
+    // Navigation holds the camera itself; only let go when nothing else needs it.
+    return () => { if (screenRef.current !== 'navigate') holdCamera(false); };
+  }, [rtActive, cameraGranted]);
+
+  // While the position is unknown or stale, read room signs in the background (every 10 s) and fix the
+  // position by itself; the agent is told in a silent note. Navigation has its own camera loop.
+  const signWatchBusy = useRef(false);
+  useEffect(() => {
+    if (!started || !rtActive || !cameraGranted || screen === 'navigate') return;
+    const timer = window.setInterval(() => {
+      const est = estimateRef.current();
+      if (document.hidden || signWatchBusy.current || est.confidence === 'high' || est.confidence === 'medium') return;
+      signWatchBusy.current = true;
+      void (async () => {
+        try {
+          const imageJpegBase64 = await captureFrame(1024, 0.6);
+          const vision = await api.vision({ imageJpegBase64, trigger: 'localize', needs: profile.needs, language: profile.language });
+          // A plate the model read but did not list as a room still counts if it looks like a room code ("F 33.5").
+          const sign = vision.ok ? vision.detectedRoomNames[0] ?? vision.readText.find((t) => /^(?:HG\s*)?[A-Z]{1,2}\s*\d{1,3}(?:\.\d{1,4})?$/i.test(t.trim())) : undefined;
+          if (!sign) return;
+          const loc = await api.localize({ roomText: sign, levelHint: est.request.levelId });
+          if (!loc.ok || !loc.place || loc.confidence < 0.9) return;
+          setFix({ place: loc.place, source: 'sign', at: Date.now() });
+          rtRef.current?.note(`[Camera, automatic] Read the room sign "${sign}": the user is at ${loc.place.name}, floor ${loc.place.levelId.split('.').at(-1)}. The live state now uses it.`);
+        } catch {
+          // No camera or no network: try again next tick.
+        } finally {
+          signWatchBusy.current = false;
+        }
+      })();
+    }, 10_000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [started, rtActive, cameraGranted, screen]);
   const runToolRef = useRef(runTool);
   runToolRef.current = runTool;
 
@@ -1692,6 +1802,8 @@ export function App() {
               ))}
             </div>
           )}
+
+          {rtActive && cameraGranted && !voiceFirst && <CameraPeek />}
 
           <section className="convo" aria-label="Conversation">
             {heard && <p className="convo-heard"><span className="sr-only">You said: </span>“{heard}”</p>}

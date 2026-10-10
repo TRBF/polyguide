@@ -504,8 +504,37 @@ export type PositionInfo =
       paths: { bearingDeg: number; kind: EdgeKind; lengthM: number }[];
       /** GPS within ~40 m of an entrance (outdoors only). */
       gpsEntrance?: { name: string; distM: number };
+      /** Built from GPS alone (no other estimate): `nearby` spans every floor and is only a list of candidates. */
+      fromGps?: boolean;
     }
   | { ok: false; message: string };
+
+/* ───────────── Room recognition from ETH photos (POST /api/vision/locate-room). Additive. ───────────── */
+
+export interface RoomCandidate {
+  /** ETH room name, e.g. "HG F 30". */
+  name: string;
+  type: string;
+  floor: string;
+  /** Routing place to localize to (the room itself, or the nearest place for foyer spaces). */
+  placeName: string;
+}
+
+export type LocateRoomResponse =
+  | {
+      ok: true;
+      insideRoom: boolean;
+      match: RoomCandidate | null;
+      /** Capped at 0.5 unless a feature unique to the room was seen (ETH seminar rooms look alike). */
+      confidence: number;
+      runnerUp: RoomCandidate | null;
+      /** Rooms built identically to the match (same type, size, seating): the photo cannot tell them apart. */
+      lookAlikes: RoomCandidate[];
+      reason: string;
+      candidates: RoomCandidate[];
+      latencyMs: number;
+    }
+  | { ok: false; reason: 'disabled' | 'invalid_request' | 'no_candidates' | 'timeout' | 'model_error' | 'rate_limited'; message: string };
 
 /* ───────────── Realtime voice agent (speech to speech). Additive. ───────────── */
 
@@ -554,6 +583,7 @@ export const API = {
   position: '/api/position',
   realtimeSession: '/api/realtime/session',
   realtimeResolve: '/api/realtime/resolve',
+  locateRoom: '/api/vision/locate-room',
   devCompare: '/api/dev/compare',
 } as const;
 
