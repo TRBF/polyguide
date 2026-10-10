@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type FormEvent } from 'react';
-import { createRecognition, type RecognitionLike } from './voice/stt';
+import { createRecognition, onSpeechInputChange, speechInputAvailable, type RecognitionLike } from './voice/stt';
 import { isSpeaking, onSpeakingChange, setMicActive, speechRecentlyActive, stopSpeech } from './voice/tts';
 
 interface VoiceBarProps {
@@ -21,7 +21,9 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
   const sessionRef = useRef<RecognitionLike | null>(null);
   const onCommandRef = useRef(onCommand);
   const languageRef = useRef(language);
-  const [available] = useState(() => Boolean(createRecognition()));
+  const [available, setAvailable] = useState(speechInputAvailable);
+  // Whisper becomes available once the server confirms it (it also covers browsers with no recognizer).
+  useEffect(() => onSpeechInputChange(() => setAvailable(speechInputAvailable())), []);
   const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [voiceError, setVoiceError] = useState('');

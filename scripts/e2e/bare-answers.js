@@ -5,6 +5,7 @@
 async (page) => {
   await page.addInitScript(() => {
     localStorage.clear();
+    localStorage.setItem('polyguide.stt', 'browser'); // these fakes stand in for the browser's recognizer, not Whisper
     window.__spoken = [];
     window.__recs = [];
     class FakeRec {

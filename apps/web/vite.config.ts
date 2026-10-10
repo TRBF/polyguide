@@ -15,6 +15,7 @@ export default defineConfig({
     port: plainHttp ? 5174 : 5173,
     // Tunnel hostnames (cloudflared/ngrok) are otherwise rejected by Vite's host check.
     allowedHosts: true,
-    proxy: { '/api': 'http://localhost:8787' },
+    // API_PORT lets a second checkout (e.g. a worktree) run its own server next to the main one.
+    proxy: { '/api': `http://localhost:${process.env.API_PORT ?? 8787}` },
   },
 });

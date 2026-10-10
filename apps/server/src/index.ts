@@ -39,6 +39,12 @@ if (USE_MOCK) {
     global: Number(process.env.INTENT_RATE_GLOBAL_PER_MIN ?? 120),
     body: () => ({ type: 'unknown', source: 'llm' }),
   }));
+  // One spoken command per request; a hands-free user says a few per minute.
+  app.use('/api/stt', rateLimit({
+    perClient: Number(process.env.STT_RATE_PER_MIN ?? 40),
+    global: Number(process.env.STT_RATE_GLOBAL_PER_MIN ?? 150),
+    body: (s) => ({ ok: false, reason: 'rate_limited', message: `Too many voice requests. Try again in ${s} seconds.` }),
+  }));
   app.route('/api', aiRoutes);
 }
 
