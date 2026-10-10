@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { logger } from 'hono/logger';
 import { bodyLimit } from 'hono/body-limit';
+import { aiRoutes } from './ai';
 import { loadGraph } from './graphStore';
 import { mockRoutes } from './mock';
 import { devRoutes } from './devCompare';
@@ -22,10 +23,7 @@ if (USE_MOCK) {
   app.route('/api', apiRoutes);
   // /dev/compare calls ETH at runtime; keep it off unless explicitly enabled (the app may sit behind a public tunnel).
   if (process.env.ENABLE_DEV_ROUTES === '1') app.route('/api', devRoutes);
-  // TODO(track-B): replace with app.route('/api', aiRoutes) from ./ai once it lands.
-  // Until Track B's aiRoutes land, report AI as disabled. Never serve canned vision results next to real routing.
-  app.post('/api/vision/check', (c) => c.json({ ok: false, reason: 'disabled', message: 'Camera AI is not available yet.' }));
-  app.post('/api/intent', (c) => c.json({ type: 'unknown', source: 'llm' }));
+  app.route('/api', aiRoutes);
 }
 
 app.onError((err, c) => {
