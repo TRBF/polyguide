@@ -128,10 +128,10 @@ h2 { margin: 0; font-size: 21px; line-height: 1.25; letter-spacing: -.02em; }
 .map-room { fill: #e5ece7; stroke: #8c9d99; stroke-width: 1.2; vector-effect: non-scaling-stroke; }
 .map-pathway { fill: none; stroke: #899892; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .map-place-dot { fill: #142e35; stroke: #fff; stroke-width: 2; vector-effect: non-scaling-stroke; }
-.map-place-label { fill: #142e35; font: 700 12px 'Segoe UI', sans-serif; paint-order: stroke; stroke: #f6f8f6; stroke-width: 3px; stroke-linejoin: round; }
+.map-place-label { fill: #142e35; font: 700 22px 'Segoe UI', sans-serif; paint-order: stroke; stroke: #f6f8f6; stroke-width: 3px; stroke-linejoin: round; }
 .map-route-outline { fill: none; stroke: #fff; stroke-width: 10; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .map-route-line { fill: none; stroke: #075e67; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.map-caption { padding: 10px 13px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; line-height: 1.4; }
+.map-caption { padding: 10px 13px; border-top: 1px solid var(--line); color: #2f454c; /* the map card stays light in dark mode */ font-size: 13px; line-height: 1.4; }
 .map-note { margin: 0; padding: 10px 14px; background: var(--warning); color: var(--warning-ink); font-weight: 700; }
 .step-list { display: grid; gap: 10px; margin: 13px 0 0; padding: 0; list-style: none; counter-reset: steps; }
 .step-list li { min-height: 76px; display: flex; align-items: center; gap: 14px; padding: 13px 16px; border: 1px solid var(--line); border-radius: 14px; }

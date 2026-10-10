@@ -45,6 +45,18 @@ function placeLabel(place: Place): string {
   return place.label ? `${place.name} — ${place.label}` : place.name;
 }
 
+const compact = (value: string) => value.toUpperCase().replace(/[\s.\-_,]+/g, '');
+
+/** "hg f 30" / "F30" / "Audimax" name this place exactly (not HG F 30.1). */
+function sameName(place: Place, query: string): boolean {
+  const q = compact(query);
+  if (!q) return false;
+  return [place.name, place.label ?? '', ...place.aliases].some((name) => {
+    const n = compact(name);
+    return n === q || (n.startsWith('HG') && n.slice(2) === q);
+  });
+}
+
 function listPlaceNames(places: Place[]): string {
   return places.map((place, index) => `${index + 1}, ${place.label ? `${place.name}, ${place.label}` : place.name}`).join('; ');
 }
@@ -199,6 +211,7 @@ export function App() {
       announce(result.message);
       return;
     }
+    setMessage('');
     setDestination(target);
     setRoute(result);
     setSelectedLevel(result.levels[0] ?? target.levelId);
@@ -233,13 +246,16 @@ export function App() {
     setBusy(false);
     if (!found) return [];
     const filtered = found.filter((place) => place.kind === 'room' || place.kind === 'poi');
-    setDestinationMatches(filtered.slice(0, 5));
+    const shown = filtered.slice(0, 5);
+    setDestinationMatches(shown);
+    // A spoken room code that names a room exactly ("HG F 30", "F 30") needs no disambiguation.
+    const exact = shown.find((place) => sameName(place, query));
     if (!filtered.length) {
       announce(`I couldn't find ${query}. Try another room number or point of interest.`);
-    } else if (byVoice && filtered.length > 1) {
-      announce(`I found ${filtered.length} matches: ${listPlaceNames(filtered.slice(0, 3))}. Say the number, or choose a result on screen.`);
-    } else if (byVoice && filtered.length === 1) {
-      await createRoute(filtered[0]);
+    } else if (byVoice && (shown.length === 1 || exact)) {
+      await createRoute(exact ?? shown[0]);
+    } else if (byVoice) {
+      announce(`I found ${shown.length} matches: ${listPlaceNames(shown)}. Say the number, or choose a result on screen.`);
     }
     return filtered.slice(0, 5);
   }
@@ -562,7 +578,8 @@ export function App() {
         setScreen('where');
         {
           const matches = await findOrigins(intent.target);
-          if (matches.length === 1) await chooseOrigin(matches[0]);
+          const exact = matches.find((place) => sameName(place, intent.target ?? ''));
+          if (matches.length === 1 || exact) await chooseOrigin(exact ?? matches[0]);
           else if (matches.length > 1) announce(`I found ${matches.length} starting points: ${listPlaceNames(matches.slice(0, 3))}. Say a number.`);
           else announce(`I couldn't find ${intent.target}. Try a room number.`);
         }
@@ -839,6 +856,12 @@ export function App() {
               <progress aria-label="Current step progress" max={Math.max(1, guidance.currentStep?.distanceM ?? 1)} value={Math.max(0, (guidance.currentStep?.distanceM ?? 0) - guidance.remainingStepM)} />
               {guidance.nextStep && <p className="next-instruction"><strong>Next:</strong> {guidance.nextStep.text}</p>}
             </div>
+            <div className="navigation-controls" aria-label="Navigation controls">
+              <button className="button button-nav" type="button" onClick={() => guidance.repeat()}>Repeat</button>
+              <button className="button button-nav button-primary" type="button" onClick={() => guidance.next()}>{guidance.currentStep?.maneuver === 'take_elevator' ? 'Done with elevator' : 'Next'}</button>
+              <button className="button button-nav" type="button" onClick={() => guidance.whereAmI()}>Where am I?</button>
+              <button className="button button-nav button-stop" type="button" onClick={() => { guidance.stop(); releaseScreenWakeLock(); setScreen('preview'); }}>Stop</button>
+            </div>
             <div className="camera-card">
               <div className="camera-preview" aria-hidden="true">
                 {cameraFramePreview ? <img src={cameraFramePreview} alt="" /> : <span>⌖</span>}
@@ -846,12 +869,6 @@ export function App() {
               </div>
               <div><strong>Camera guidance</strong><p>{cameraBusy || guidance.visionBusy ? 'Checking…' : guidance.lastVision?.sceneSummary || cameraMessage || 'The camera checks automatically near each turn.'}</p>{guidanceVision && <p className="vision-summary">{guidanceVision}</p>}</div>
               <button className="button button-secondary" type="button" onClick={() => void checkCamera('user_query')} disabled={cameraBusy || !cameraGranted}>{cameraBusy ? 'Checking…' : 'Check camera'}</button>
-            </div>
-            <div className="navigation-controls" aria-label="Navigation controls">
-              <button className="button button-nav" type="button" onClick={() => guidance.repeat()}>Repeat</button>
-              <button className="button button-nav button-primary" type="button" onClick={() => guidance.next()}>{guidance.currentStep?.maneuver === 'take_elevator' ? 'Done with elevator' : 'Next'}</button>
-              <button className="button button-nav" type="button" onClick={() => guidance.whereAmI()}>Where am I?</button>
-              <button className="button button-nav button-stop" type="button" onClick={() => { guidance.stop(); releaseScreenWakeLock(); setScreen('preview'); }}>Stop</button>
             </div>
             <div className="sr-only" aria-live="assertive" aria-atomic="true">{liveGuidanceAnnouncement}</div>
           </section>
@@ -861,7 +878,10 @@ export function App() {
           <section className="screen-panel arrival-panel" aria-labelledby="arrived-title">
             <div className="arrival-mark" aria-hidden="true">✓</div>
             <h1 id="arrived-title">You’ve arrived</h1>
-            <p className="lead">{destination?.name ?? route?.to.name ?? 'Your destination'}{route?.steps.at(-1)?.side ? ` is on your ${route.steps.at(-1)?.side}.` : '.'}</p>
+            <p className="lead">{destination?.name ?? route?.to.name ?? 'Your destination'}{(() => {
+              const side = route?.steps.at(-1)?.side;
+              return side === 'left' || side === 'right' ? ` is on your ${side}.` : side === 'ahead' ? ' is ahead of you.' : '.';
+            })()}</p>
             <p>Keep your cane or guide dog with you. PolyGuide does not detect obstacles.</p>
             <div className="screen-actions"><button className="button button-primary" type="button" onClick={startNewDestination}>Choose a new destination</button></div>
           </section>
