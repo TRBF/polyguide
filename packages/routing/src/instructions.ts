@@ -11,6 +11,7 @@ const COLLAPSE_DEG = 25;
 const DRIFT_DEG = 45; // gradual curves: break once the heading has drifted this far from the step's start
 const MIN_SEG_M = 0.5; // ignore bearings of tiny segments
 const TINY_STEP_M = 5; // horizontal steps shorter than this are folded into a neighbour (lobby zig-zags)
+const CHORD_M = 8; // horizontal step bearings are measured over this distance
 const LANDMARK_RADIUS_M = 6;
 const MAX_LANDMARKS = 6;
 
@@ -132,6 +133,30 @@ export function buildSteps({ graph, nodes, edges, model, to, now = new Date() }:
     i--;
   }
 
+  /* Chord bearings: direction over the first/last CHORD_M of a step, so folded zig-zags give a walkable heading. */
+  const chordBearings = (st: RawStep) => {
+    if (st.vertical) return;
+    const pts = [st.legs[0].a, ...st.legs.map((l) => l.b)];
+    const total = st.legs.reduce((t, l) => t + dist2D(l.a, l.b), 0);
+    if (total < MIN_SEG_M) return;
+    const at = (d: number) => {
+      let acc = 0;
+      for (let k = 0; k + 1 < pts.length; k++) {
+        const seg = dist2D(pts[k], pts[k + 1]);
+        if (acc + seg >= d && seg > 0) {
+          const t = (d - acc) / seg;
+          return { x: pts[k].x + t * (pts[k + 1].x - pts[k].x), y: pts[k].y + t * (pts[k + 1].y - pts[k].y) };
+        }
+        acc += seg;
+      }
+      return pts[pts.length - 1];
+    };
+    const c = Math.min(CHORD_M, total);
+    st.firstBearing = bearingDeg(pts[0], at(c));
+    st.lastBearing = bearingDeg(at(total - c), pts[pts.length - 1]);
+  };
+  raw.forEach(chordBearings);
+
   /* 2c. Merge steps that continue straight on from a horizontal neighbour (drift splits, folded zig-zags). */
   for (let i = 1; i < raw.length; i++) {
     const [a, b] = [raw[i - 1], raw[i]];
@@ -142,7 +167,7 @@ export function buildSteps({ graph, nodes, edges, model, to, now = new Date() }:
       Math.abs(normalize180(b.firstBearing - a.lastBearing)) < COLLAPSE_DEG
     ) {
       a.legs.push(...b.legs);
-      a.lastBearing = b.lastBearing ?? a.lastBearing;
+      chordBearings(a);
       raw.splice(i, 1);
       i--;
     }

@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { logger } from 'hono/logger';
 import { loadGraph } from './graphStore';
 import { mockAiRoutes, mockRoutes } from './mock';
+import { devRoutes } from './devCompare';
 import { apiRoutes } from './routes';
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -16,6 +17,7 @@ if (USE_MOCK) {
 } else {
   loadGraph();
   app.route('/api', apiRoutes);
+  app.route('/api', devRoutes);
   // TODO(track-B): replace with app.route('/api', aiRoutes) from ./ai once it lands.
   app.route('/api', mockAiRoutes);
 }
