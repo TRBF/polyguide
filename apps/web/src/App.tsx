@@ -14,7 +14,7 @@ import { VoiceBar, type VoiceBarHandle } from './VoiceBar';
 import { configureSpeech, speak, stopSpeech } from './voice/tts';
 import { parseCommand } from './voice/commands';
 import { loadPreferences, savePreferences, type Preferences } from './storage';
-import { useGuidanceMock } from './useGuidanceMock';
+import { useGuidance } from './guidance';
 import './styles.css';
 
 type Route = Extract<RouteResult, { ok: true }>;
@@ -95,10 +95,11 @@ export function App() {
   }, []);
 
   const onGuidanceRouteChange = useCallback((nextRoute: Route) => setRoute(nextRoute), []);
-  const guidance = useGuidanceMock(route, profile, {
+  const guidance = useGuidance(route, profile, {
     onSpeak: onGuidanceSpeak,
     onRouteChange: onGuidanceRouteChange,
     beaconEnabled: preferences.settings.beaconEnabled,
+    visionEnabled: cameraGranted,
   });
 
   useEffect(() => {
@@ -526,16 +527,14 @@ export function App() {
       case 'where_am_i':
         if (screen === 'navigate') {
           guidance.whereAmI();
-          if (cameraGranted) await checkCamera('user_query');
-          else announce('Enable camera access to check a room sign. You can also say scan sign.', 'vision');
+          if (!cameraGranted) announce('Enable camera access to check a room sign. You can also say scan sign.', 'vision');
         } else if (screen === 'where') announce(origin ? `Your starting point is ${origin.name}.` : 'Choose or scan a room to set your starting point.');
         else announce(origin ? `You started from ${origin.name}.` : 'Your starting point has not been selected.');
         return;
       case 'whats_ahead':
         if (screen === 'navigate') {
           guidance.whatsAhead();
-          if (cameraGranted) await checkCamera('user_query');
-          else announce('Enable camera access to ask the camera what is ahead.', 'vision');
+          if (!cameraGranted) announce('Enable camera access to ask the camera what is ahead.', 'vision');
         } else announce(destination ? `Your destination is ${destination.name}.` : 'Choose a destination first.');
         return;
       case 'navigate_to':
@@ -843,15 +842,15 @@ export function App() {
             <div className="camera-card">
               <div className="camera-preview" aria-hidden="true">
                 {cameraFramePreview ? <img src={cameraFramePreview} alt="" /> : <span>⌖</span>}
-                {cameraBusy && <span className="camera-checking">Checking…</span>}
+                {(cameraBusy || guidance.visionBusy) && <span className="camera-checking">Checking…</span>}
               </div>
-              <div><strong>Camera guidance</strong><p>{cameraBusy ? 'Checking…' : cameraMessage || 'Camera is off until you ask for a check.'}</p>{guidanceVision && <p className="vision-summary">{guidanceVision}</p>}</div>
+              <div><strong>Camera guidance</strong><p>{cameraBusy || guidance.visionBusy ? 'Checking…' : guidance.lastVision?.sceneSummary || cameraMessage || 'The camera checks automatically near each turn.'}</p>{guidanceVision && <p className="vision-summary">{guidanceVision}</p>}</div>
               <button className="button button-secondary" type="button" onClick={() => void checkCamera('user_query')} disabled={cameraBusy || !cameraGranted}>{cameraBusy ? 'Checking…' : 'Check camera'}</button>
             </div>
             <div className="navigation-controls" aria-label="Navigation controls">
               <button className="button button-nav" type="button" onClick={() => guidance.repeat()}>Repeat</button>
               <button className="button button-nav button-primary" type="button" onClick={() => guidance.next()}>{guidance.currentStep?.maneuver === 'take_elevator' ? 'Done with elevator' : 'Next'}</button>
-              <button className="button button-nav" type="button" onClick={() => { guidance.whereAmI(); if (cameraGranted) void checkCamera('user_query'); }}>Where am I?</button>
+              <button className="button button-nav" type="button" onClick={() => guidance.whereAmI()}>Where am I?</button>
               <button className="button button-nav button-stop" type="button" onClick={() => { guidance.stop(); releaseScreenWakeLock(); setScreen('preview'); }}>Stop</button>
             </div>
             <div className="sr-only" aria-live="assertive" aria-atomic="true">{liveGuidanceAnnouncement}</div>
@@ -874,7 +873,7 @@ export function App() {
             <p className="lead">These preferences are saved on this device.</p>
             <label className="setting-control" htmlFor="speech-rate"><span><strong>Speech rate</strong><small>{preferences.settings.speechRate.toFixed(1)}×</small></span><input id="speech-rate" type="range" min="0.6" max="1.5" step="0.1" value={preferences.settings.speechRate} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, speechRate: Number(event.target.value) } }))} /></label>
             <label className="toggle-row"><input type="checkbox" checked={preferences.settings.speakWithAppVoice} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, speakWithAppVoice: event.target.checked } }))} /><span><strong>Speak with app voice</strong><small>Turn this off when your screen reader already reads the instruction.</small></span></label>
-            <label className="toggle-row"><input type="checkbox" checked={preferences.settings.beaconEnabled} onChange={(event) => { const enabled = event.target.checked; updatePreferences((current) => ({ ...current, settings: { ...current.settings, beaconEnabled: enabled } })); guidance.setBeaconEnabled(enabled); }} /><span><strong>Audio direction beacon</strong><small>Sound cue for direction when supported. This mock build keeps the cue off.</small></span></label>
+            <label className="toggle-row"><input type="checkbox" checked={preferences.settings.beaconEnabled} onChange={(event) => { const enabled = event.target.checked; updatePreferences((current) => ({ ...current, settings: { ...current.settings, beaconEnabled: enabled } })); guidance.setBeaconEnabled(enabled); }} /><span><strong>Audio direction beacon</strong><small>A stereo tick that moves toward the route direction and double-ticks when you face it.</small></span></label>
             <label className="setting-control" htmlFor="step-length"><span><strong>Step length</strong><small>{preferences.settings.stepLengthM.toFixed(1)} m</small></span><input id="step-length" type="range" min="0.3" max="1.5" step="0.1" value={preferences.settings.stepLengthM} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, stepLengthM: Number(event.target.value) }, profile: { ...current.profile, stepLengthM: Number(event.target.value) } }))} /></label>
             <div className="screen-actions split-actions"><button className="button button-secondary" type="button" onClick={moveBack}>Back</button><button className="button button-primary" type="button" onClick={moveBack}>Done</button></div>
           </section>

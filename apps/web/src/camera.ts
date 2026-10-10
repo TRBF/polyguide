@@ -1,51 +1,13 @@
+import { captureFrame, stopCamera } from './guidance/camera';
 import { requestSensorPermissions } from './sensorPermissions';
 
-/** One camera stream is reused between checks (avoids repeated iOS prompts and cold-start latency), then released when idle. */
-const CAMERA_IDLE_MS = 45_000;
-let cameraStream: MediaStream | null = null;
-let cameraVideo: HTMLVideoElement | null = null;
-let cameraIdleTimer: number | null = null;
-
+/** The camera stream is shared with guidance (one stream only; iOS mutes a second one). */
 export function releaseCamera(): void {
-  if (cameraIdleTimer !== null) window.clearTimeout(cameraIdleTimer);
-  cameraIdleTimer = null;
-  cameraStream?.getTracks().forEach((track) => track.stop());
-  cameraStream = null;
-  cameraVideo = null;
-}
-
-async function openCamera(): Promise<HTMLVideoElement> {
-  if (cameraStream && cameraVideo && cameraStream.getVideoTracks().some((t) => t.readyState === 'live')) return cameraVideo;
-  releaseCamera();
-  if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access is unavailable in this browser.');
-  const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
-  const video = document.createElement('video');
-  video.srcObject = stream;
-  video.muted = true;
-  video.playsInline = true;
-  await video.play();
-  if (!video.videoWidth || !video.videoHeight) {
-    await new Promise<void>((resolve) => video.addEventListener('loadedmetadata', () => resolve(), { once: true }));
-  }
-  // The first frames after play() can be black/auto-exposing; give the sensor a moment.
-  await new Promise((resolve) => window.setTimeout(resolve, 350));
-  cameraStream = stream;
-  cameraVideo = video;
-  return video;
+  stopCamera();
 }
 
 export async function captureRoomSignFrame(maxSide = 1024): Promise<string> {
-  const video = await openCamera();
-  if (cameraIdleTimer !== null) window.clearTimeout(cameraIdleTimer);
-  cameraIdleTimer = window.setTimeout(releaseCamera, CAMERA_IDLE_MS);
-  const scale = Math.min(1, maxSide / Math.max(video.videoWidth, video.videoHeight));
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.round(video.videoWidth * scale);
-  canvas.height = Math.round(video.videoHeight * scale);
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('Could not prepare the camera image.');
-  context.drawImage(video, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL('image/jpeg', 0.6).split(',')[1] ?? '';
+  return captureFrame(maxSide, 0.6);
 }
 
 let screenWakeLock: WakeLockSentinel | null = null;
