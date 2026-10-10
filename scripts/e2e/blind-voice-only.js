@@ -1,7 +1,7 @@
 // Voice-only (blind) walkthrough: one tap on the start gate, then every step by simulated speech.
 // Fakes SpeechRecognition (window.__say) and speechSynthesis (window.__spoken).
 // Run with `pnpm dev:server` + `pnpm --filter @polyguide/web dev:http`, then pass this file as a
-// Playwright `page => ...` snippet (e.g. Playwright MCP browser_run_code). Expect taps === 1 and a final "You've arrived".
+// Playwright `page => ...` snippet (e.g. Playwright MCP browser_run_code). Expect taps === 1, muted === 0 and a final "You've arrived".
 async (page) => {
   await page.addInitScript(() => {
     localStorage.clear();
@@ -11,7 +11,7 @@ async (page) => {
       constructor() { this.running = false; window.__recs.push(this); }
       start() { if (this.running) throw new Error('already started'); this.running = true; }
       stop() { this.running = false; setTimeout(() => this.onend && this.onend(), 0); }
-      abort() { this.running = false; }
+      abort() { const was = this.running; this.running = false; if (was) setTimeout(() => this.onend && this.onend(), 0); }
     }
     window.SpeechRecognition = FakeRec;
     window.webkitSpeechRecognition = FakeRec;
@@ -25,7 +25,8 @@ async (page) => {
     };
     const synth = {
       speaking: false,
-      speak(u) { window.__spoken.push(u.text); setTimeout(() => u.onend && u.onend(), 5); },
+      // Like Android Chrome: speech is silent while a recognizer holds the mic.
+      speak(u) { const muted = window.__listening(); window.__spoken.push((muted ? 'MUTED: ' : '') + u.text); if (muted) window.__muted = (window.__muted || 0) + 1; setTimeout(() => u.onend && u.onend(), 5); },
       cancel() {}, getVoices() { return []; },
     };
     Object.defineProperty(window, 'speechSynthesis', { value: synth, configurable: true });
@@ -58,5 +59,6 @@ async (page) => {
     if (!ok) { log.push('  mic not listening -> blind user would have to tap the mic'); break; }
   }
   const spoken = await page.evaluate(() => window.__spoken);
-  return { taps, log, spoken: spoken.map((s) => s.slice(0, 140)) };
+  const muted = await page.evaluate(() => window.__muted || 0);
+  return { taps, muted, log, spoken: spoken.map((s) => s.slice(0, 140)) };
 }

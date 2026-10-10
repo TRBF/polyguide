@@ -179,8 +179,9 @@ export function App() {
     // iOS honours the motion prompt only while the gesture is fresh; a returning voice-first user gets no other tap.
     if (preferences.settings.voiceFirst) void requestSensorPermissions().catch(() => undefined);
     setStarted(true);
-    speak(entrySpeech.needs, 'info');
+    // Mic first (inside the gesture), then the welcome: speaking pauses the mic until the welcome ends.
     voiceBarRef.current?.startContinuous();
+    speak(entrySpeech.needs, 'info');
   }
 
   // Hands-free listening: always on the first screen (a blind user can't tap "Blind" first), and on every

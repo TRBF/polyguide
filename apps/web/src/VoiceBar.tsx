@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type FormEvent } from 'react';
 import { createRecognition, type RecognitionLike } from './voice/stt';
-import { speechRecentlyActive } from './voice/tts';
+import { isSpeaking, onSpeakingChange, setMicActive, speechRecentlyActive } from './voice/tts';
 
 interface VoiceBarProps {
   voiceFirst: boolean;
@@ -18,39 +18,66 @@ export interface VoiceBarHandle {
 export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function VoiceBar({ voiceFirst, continuous, language, onCommand }, ref) {
   const recognitionRef = useRef<RecognitionLike | null>(null);
   const onCommandRef = useRef(onCommand);
+  const languageRef = useRef(language);
   const [available, setAvailable] = useState(false);
   const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [voiceError, setVoiceError] = useState('');
-  /** True while continuous listening should survive the browser ending a session after silence. */
+  /** True while hands-free listening is on; it survives pauses for the app voice and browser timeouts. */
   const keepAlive = useRef(false);
+  /** True between recognition.start() and its onend. */
+  const running = useRef(false);
+  const resumeTimer = useRef<number | null>(null);
 
   onCommandRef.current = onCommand;
+  languageRef.current = language;
+
+  function startRecognition(recognition: RecognitionLike, keepListening: boolean): boolean {
+    if (running.current) return true;
+    try {
+      recognition.lang = languageRef.current === 'de' ? 'de-CH' : 'en-US';
+      recognition.continuous = keepListening;
+      recognition.interimResults = false;
+      recognition.start();
+      running.current = true;
+      setMicActive(true);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Hands-free: (re)open the mic, but only while the app is not talking. */
+  function scheduleResume(delayMs: number): void {
+    if (resumeTimer.current !== null) window.clearTimeout(resumeTimer.current);
+    resumeTimer.current = window.setTimeout(() => {
+      resumeTimer.current = null;
+      const recognition = recognitionRef.current;
+      if (!recognition || !keepAlive.current || running.current || isSpeaking()) return;
+      if (!startRecognition(recognition, true)) scheduleResume(1000);
+    }, delayMs);
+  }
 
   useImperativeHandle(ref, () => ({
     startContinuous() {
       const recognition = recognitionRef.current;
-      if (!recognition || listening) return;
-      try {
-        recognition.lang = language === 'de' ? 'de-CH' : 'en-US';
-        recognition.continuous = true;
-        recognition.interimResults = false;
-        setVoiceError('');
-        keepAlive.current = true;
-        recognition.start();
-        setListening(true);
-      } catch {
-        setVoiceError('Voice input could not start. Type the same command below.');
-      }
+      if (!recognition || keepAlive.current) return;
+      keepAlive.current = true;
+      setVoiceError('');
+      setListening(true);
+      // Started at once (inside the user's tap: iOS needs that, and it raises the mic prompt);
+      // if the app is talking, the speaking listener pauses it again right away.
+      if (!startRecognition(recognition, true)) scheduleResume(500);
+      else if (isSpeaking()) recognition.abort();
     },
     stopContinuous() {
       const recognition = recognitionRef.current;
       if (!recognition || !keepAlive.current) return;
       keepAlive.current = false;
-      recognition.stop();
+      if (running.current) recognition.stop();
       setListening(false);
     },
-  }), [language, listening]);
+  }), []);
 
   useEffect(() => {
     const recognition = createRecognition();
@@ -76,20 +103,26 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
       if (event.error === 'no-speech' || event.error === 'aborted') return;
       if (event.error === 'not-allowed' || event.error === 'service-not-allowed') keepAlive.current = false;
       setVoiceError(event.error === 'not-allowed' ? 'Microphone access was denied. Type the same command below.' : 'Voice input stopped. Type the same command below.');
-      setListening(false);
+      if (!keepAlive.current) setListening(false);
     };
     recognition.onend = () => {
-      if (keepAlive.current) {
-        window.setTimeout(() => {
-          if (!keepAlive.current) return;
-          try { recognition.start(); setListening(true); } catch { setListening(false); }
-        }, 300);
-        return;
-      }
-      setListening(false);
+      running.current = false;
+      setMicActive(false);
+      if (keepAlive.current) scheduleResume(300);
+      else setListening(false);
     };
+    const unsubscribe = onSpeakingChange((speaking) => {
+      if (!keepAlive.current) return;
+      if (speaking) {
+        if (resumeTimer.current !== null) window.clearTimeout(resumeTimer.current);
+        resumeTimer.current = null;
+        if (running.current) recognition.abort();
+      } else scheduleResume(300);
+    });
     return () => {
+      unsubscribe();
       keepAlive.current = false;
+      if (resumeTimer.current !== null) window.clearTimeout(resumeTimer.current);
       recognition.abort();
       recognitionRef.current = null;
     };
@@ -100,22 +133,15 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
     if (!recognition) return;
     if (listening) {
       keepAlive.current = false;
-      recognition.stop();
+      if (running.current) recognition.stop();
       setListening(false);
       return;
     }
-    try {
-      recognition.lang = language === 'de' ? 'de-CH' : 'en-US';
-      recognition.continuous = continuous;
-      recognition.interimResults = false;
-      keepAlive.current = continuous;
-      setTranscript('');
-      setVoiceError('');
-      recognition.start();
-      setListening(true);
-    } catch {
-      setVoiceError('Voice input could not start. Type the same command below.');
-    }
+    keepAlive.current = continuous;
+    setTranscript('');
+    setVoiceError('');
+    if (startRecognition(recognition, continuous)) setListening(true);
+    else setVoiceError('Voice input could not start. Type the same command below.');
   }
 
   function submitText(event: FormEvent<HTMLFormElement>): void {
