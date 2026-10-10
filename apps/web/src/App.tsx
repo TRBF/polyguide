@@ -14,6 +14,7 @@ import { captureRoomSignFrame, releaseScreenWakeLock, requestAppPermissions, req
 import { RouteMap } from './RouteMap';
 import { VoiceBar, type VoiceBarHandle } from './VoiceBar';
 import { configureSpeech, speak, stopSpeech } from './voice/tts';
+import { VoicePicker } from './voice/VoicePicker';
 import { parseCommand } from './voice/commands';
 import { loadPreferences, savePreferences, type Preferences } from './storage';
 import { useGuidance } from './guidance';
@@ -129,7 +130,7 @@ export function App() {
 
   useEffect(() => {
     savePreferences(preferences);
-    configureSpeech({ enabled: preferences.settings.speakWithAppVoice, rate: preferences.settings.speechRate });
+    configureSpeech({ enabled: preferences.settings.speakWithAppVoice, rate: preferences.settings.speechRate, language: preferences.profile.language === 'de' ? 'de' : 'en', voiceName: preferences.settings.voiceName });
   }, [preferences]);
 
   useEffect(() => {
@@ -957,6 +958,7 @@ export function App() {
           <section className="screen-panel" aria-labelledby="settings-title">
             <h1 id="settings-title">Settings</h1>
             <p className="lead">These preferences are saved on this device.</p>
+            <VoicePicker value={preferences.settings.voiceName} onChange={(voiceName) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, voiceName } }))} />
             <label className="setting-control" htmlFor="speech-rate"><span><strong>Speech rate</strong><small>{preferences.settings.speechRate.toFixed(1)}×</small></span><input id="speech-rate" type="range" min="0.6" max="1.5" step="0.1" value={preferences.settings.speechRate} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, speechRate: Number(event.target.value) } }))} /></label>
             <label className="toggle-row"><input type="checkbox" checked={preferences.settings.speakWithAppVoice} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, speakWithAppVoice: event.target.checked } }))} /><span><strong>Speak with app voice</strong><small>Turn this off when your screen reader already reads the instruction.</small></span></label>
             <label className="toggle-row"><input type="checkbox" checked={preferences.settings.beaconEnabled} onChange={(event) => { const enabled = event.target.checked; updatePreferences((current) => ({ ...current, settings: { ...current.settings, beaconEnabled: enabled } })); guidance.setBeaconEnabled(enabled); }} /><span><strong>Audio direction beacon</strong><small>A stereo tick that moves toward the route direction and double-ticks when you face it.</small></span></label>

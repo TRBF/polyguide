@@ -6,6 +6,8 @@ export interface AppSettings {
   speakWithAppVoice: boolean;
   beaconEnabled: boolean;
   stepLengthM: number;
+  /** speechSynthesis voice name; null = pick the best voice for the language automatically. */
+  voiceName: string | null;
 }
 
 export interface Preferences {
@@ -23,6 +25,7 @@ export const defaultPreferences: Preferences = {
     speakWithAppVoice: true,
     beaconEnabled: true,
     stepLengthM: 0.7,
+    voiceName: null,
   },
 };
 
@@ -58,6 +61,7 @@ export function loadPreferences(): Preferences {
         speakWithAppVoice: settingsData.speakWithAppVoice !== false,
         beaconEnabled: settingsData.beaconEnabled !== false,
         stepLengthM: Number.isFinite(stepLengthM) ? Math.min(1.5, Math.max(0.3, stepLengthM)) : 0.7,
+        voiceName: typeof settingsData.voiceName === 'string' && settingsData.voiceName ? settingsData.voiceName : null,
       },
     };
   } catch {

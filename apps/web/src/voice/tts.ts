@@ -1,4 +1,5 @@
 import type { SpeechPriority } from '@polyguide/shared';
+import { pickVoice, rankVoices, type SpeechLang } from './voices';
 
 const priority: Record<SpeechPriority, number> = {
   info: 0,
@@ -19,6 +20,40 @@ let activeUtterance: SpeechSynthesisUtterance | null = null;
 let pendingStart: number | null = null;
 let queue: SpeechItem[] = [];
 let lastEndedAt = 0;
+let lang: SpeechLang = 'en';
+let preferredVoice: string | null = null;
+let voice: SpeechSynthesisVoice | null = null;
+const voiceListeners = new Set<() => void>();
+
+const synth = () => (typeof window !== 'undefined' && 'speechSynthesis' in window ? window.speechSynthesis : null);
+
+/** getVoices() is empty until the browser loads them (async in Chrome); re-pick when they arrive. */
+function refreshVoice(): void {
+  const s = synth();
+  voice = s ? pickVoice(s.getVoices(), lang, preferredVoice) : null;
+  voiceListeners.forEach((fn) => fn());
+}
+if (synth()) {
+  refreshVoice();
+  synth()!.addEventListener?.('voiceschanged', refreshVoice);
+}
+
+/** Installed voices for the current language, best first (for a settings picker). */
+export function availableVoices(): SpeechSynthesisVoice[] {
+  const s = synth();
+  return s ? rankVoices(s.getVoices(), lang) : [];
+}
+
+/** Name of the voice that will actually be used (null = browser default). */
+export function activeVoiceName(): string | null {
+  return voice?.name ?? null;
+}
+
+/** Notified when the voice list loads or the choice changes. Returns an unsubscribe function. */
+export function onVoicesChanged(fn: () => void): () => void {
+  voiceListeners.add(fn);
+  return () => voiceListeners.delete(fn);
+}
 
 /** True while the app voice is talking or finished <ms ago; used to keep the mic from hearing us. */
 export function speechRecentlyActive(ms = 1200): boolean {
@@ -30,6 +65,9 @@ function start(item: SpeechItem): void {
   if (!enabled || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
   const utterance = new SpeechSynthesisUtterance(item.text);
   utterance.rate = rate;
+  // Without lang + voice, a German-default device reads English with a German voice.
+  utterance.lang = voice?.lang ?? (lang === 'de' ? 'de-CH' : 'en-US');
+  if (voice) utterance.voice = voice;
   currentPriority = item.priority;
   activeUtterance = utterance;
   utterance.onend = () => {
@@ -49,7 +87,14 @@ function start(item: SpeechItem): void {
   window.speechSynthesis.speak(utterance);
 }
 
-export function configureSpeech(options: { enabled?: boolean; rate?: number }): void {
+export function configureSpeech(options: { enabled?: boolean; rate?: number; language?: SpeechLang; voiceName?: string | null }): void {
+  const nextLang = options.language ?? lang;
+  const nextVoice = options.voiceName === undefined ? preferredVoice : options.voiceName;
+  if (nextLang !== lang || nextVoice !== preferredVoice) {
+    lang = nextLang;
+    preferredVoice = nextVoice;
+    refreshVoice();
+  }
   if (typeof options.rate === 'number' && Number.isFinite(options.rate)) {
     rate = Math.min(1.5, Math.max(0.6, options.rate));
   }
