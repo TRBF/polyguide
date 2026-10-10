@@ -1,4 +1,5 @@
 import type { EdgeId, GraphEdge, GraphJson, GraphNode, Level, NodeId, Place } from '@polyguide/shared';
+import { makeProjection, type Projection } from './geo';
 
 export interface Arc {
   edge: GraphEdge;
@@ -13,8 +14,10 @@ export class Graph {
   readonly levels: Level[];
   readonly levelOrder: Map<string, number>;
   readonly places: Place[];
+  readonly proj: Projection;
 
   constructor(readonly json: GraphJson) {
+    this.proj = makeProjection(json.origin);
     for (const n of json.nodes) {
       this.nodes.set(n.id, n);
       this.adj.set(n.id, []);
@@ -27,6 +30,12 @@ export class Graph {
     this.levels = json.levels;
     this.levelOrder = new Map(json.levels.map((l) => [l.id, l.verticalOrder]));
     this.places = json.places;
+  }
+
+  /** Local ENU x/y of a lat/lon. */
+  xy(p: { lat: number; lon: number }): { x: number; y: number } {
+    const [x, y] = this.proj.toXY(p.lon, p.lat);
+    return { x, y };
   }
 
   node(id: NodeId): GraphNode {

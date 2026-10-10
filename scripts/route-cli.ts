@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { GraphJson, Need } from '@polyguide/shared';
-import { Graph, astar, costModel } from '@polyguide/routing';
+import { Graph, astar, costModel, planRoute } from '@polyguide/routing';
 
 const [fromQ, toQ, needsArg = ''] = process.argv.slice(2);
 if (!fromQ || !toQ) {
@@ -37,3 +37,14 @@ console.log(`  ${dist.toFixed(0)} m, cost ${r.cost.toFixed(0)} s, ${r.edges.leng
 console.log('  edge kinds', kinds);
 const levels = r.nodes.map((n) => graph.node(n).levelId).filter((l, i, a) => l && l !== a[i - 1]);
 console.log('  levels', levels.join(' → '));
+
+const plan = planRoute(graph, { routeId: 'cli', from, to, profile: { needs } });
+if (plan.ok) {
+  console.log(`  summary: ${plan.profileSummary.join(' · ')}  |  ${plan.totalDistanceM} m, ${plan.totalDurationS} s, levels ${plan.levels.join(' → ')}`);
+  for (const w of plan.warnings) console.log(`  ⚠ ${w}`);
+  for (const s of plan.steps) {
+    console.log(`  ${String(s.index).padStart(2)} ${s.maneuver.padEnd(16)} ${String(s.distanceM).padStart(6)} m  brg ${String(s.bearingDeg ?? '-').padStart(3)}  ${s.text}`);
+    console.log(`     🔊 ${s.speech}`);
+    if (s.expectedLandmarks.length) console.log(`     👁 ${s.expectedLandmarks.map((l) => `${l.label}@${l.atDistanceM}${l.side?.[0] ?? ''}`).join(', ')}`);
+  }
+}

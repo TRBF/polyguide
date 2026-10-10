@@ -5,3 +5,6 @@ export * from './heap';
 export * from './graph';
 export * from './profiles';
 export * from './astar';
+export * from './speech';
+export * from './instructions';
+export * from './route';
