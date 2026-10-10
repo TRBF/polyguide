@@ -45,6 +45,12 @@ if (USE_MOCK) {
     global: Number(process.env.STT_RATE_GLOBAL_PER_MIN ?? 150),
     body: (s) => ({ ok: false, reason: 'rate_limited', message: `Too many voice requests. Try again in ${s} seconds.` }),
   }));
+  // The voice agent answers every sentence outside the instant commands: a few per minute per user.
+  app.use('/api/agent', rateLimit({
+    perClient: Number(process.env.AGENT_RATE_PER_MIN ?? 40),
+    global: Number(process.env.AGENT_RATE_GLOBAL_PER_MIN ?? 150),
+    body: (s) => ({ ok: false, reason: 'rate_limited', message: `Too many requests. Try again in ${s} seconds.` }),
+  }));
   app.route('/api', aiRoutes);
 }
 

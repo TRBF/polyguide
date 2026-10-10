@@ -16,13 +16,24 @@ export function parseCommand(transcript: string): Intent | null {
   if (/^(use gps|use gps outdoors|find me outdoors)$/.test(text)) {
     return { type: 'set_location', target: 'use gps', source: 'regex' };
   }
-  const destination = text.match(/^(?:take me to|navigate to|go to)\s+(.+)$/);
+  const destination = text.match(/^(?:please\s+)?(?:take me to|navigate to|go to|bring me to|guide me to|directions to|route to|show me the way to|how do i get to|how can i get to|i want to go to|i'd like to go to|i need to go to|i need to get to|where is|where's|find)\s+(?:the\s+)?(.+?)(?:\s+please)?$/);
   if (destination?.[1]) return { type: 'navigate_to', target: destination[1], source: 'regex' };
+  // Needs said as a need, not a place: "I need the toilet", "toilet please", "way out".
+  if (/^(?:i need (?:the |a )?|i have to (?:go to )?(?:the )?)?(?:toilet|toilets|bathroom|restroom|loo|wc)(?:\s+please)?$/.test(text)) {
+    return { type: 'navigate_to', target: 'nearest toilet', source: 'regex' };
+  }
+  if (/^(?:the\s+)?(?:nearest\s+)?(?:exit|way out|way outside)(?:\s+please)?$|^how do i get out$|^get me out(?: of here)?$/.test(text)) {
+    return { type: 'navigate_to', target: 'nearest exit', source: 'regex' };
+  }
+  if (/^(?:the\s+)?(?:nearest\s+)?(?:elevator|lift)(?:\s+please)?$/.test(text)) {
+    return { type: 'navigate_to', target: 'nearest elevator', source: 'regex' };
+  }
   const location = text.match(/^(?:i am at|i'm at|i am in|i'm in)\s+(.+)$/);
   if (location?.[1]) return { type: 'set_location', target: location[1], source: 'regex' };
-  const option = text.match(/^(?:number|option)\s+(one|two|three|four|five|\d+)$/);
+  // "number two", "option 2", or a bare "two" / "2" / "the second one" after a list was read out.
+  const option = text.match(/^(?:number|option|the)?\s*(one|two|three|four|five|first|second|third|fourth|fifth|[1-9])(?:\s+one)?$/);
   if (option?.[1]) {
-    const words: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5 };
+    const words: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
     return { type: 'choose_option', option: words[option[1]] ?? Number(option[1]), source: 'regex' };
   }
   return null;
@@ -56,4 +67,28 @@ export function answerForScreen(screen: string, transcript: string, intent: Inte
     if ((!intent && looksLikeRoom(text)) || (intent?.type === 'unknown' && shortReply(text))) return { type: 'navigate_to', target: placeText(transcript), source: 'regex' };
   }
   return intent;
+}
+
+/** Commands that are about the app or the user's situation rather than a navigation intent. */
+export type AppCommand =
+  | { type: 'emergency' }
+  | { type: 'elevator_broken' }
+  | { type: 'change_needs' }
+  | { type: 'start_over' }
+  | { type: 'yes' }
+  | { type: 'no' }
+  | { type: 'repeat_slower' }
+  | { type: 'louder' };
+
+export function parseAppCommand(transcript: string): AppCommand | null {
+  const text = normalize(transcript);
+  if (/^(?:emergency|it's an emergency|call (?:for )?help|call an ambulance|call 112|call 144|i need (?:urgent|emergency) help|help me please|i am hurt|i'm hurt|i fell|i have fallen|sos)$/.test(text)) return { type: 'emergency' };
+  if (/\b(?:elevator|lift)\b.*\b(?:not working|broken|out of order|out of service|closed|doesn't work|does not work|isn't working|is not working|won't come|stuck)\b|^(?:broken|no) (?:elevator|lift)$/.test(text)) return { type: 'elevator_broken' };
+  if (/^(?:change|edit|update) (?:my )?(?:needs|profile|preferences)$/.test(text)) return { type: 'change_needs' };
+  if (/^(?:start over|start again|restart|new trip|reset)$/.test(text)) return { type: 'start_over' };
+  if (/^(?:yes|yeah|yep|yes please|correct|that's right|ok|okay|sure|sounds good|go ahead|let's go)$/.test(text)) return { type: 'yes' };
+  if (/^(?:no|nope|no thanks|wrong|that's wrong|not that one)$/.test(text)) return { type: 'no' };
+  if (/^(?:repeat slower|say (?:that|it) (?:again )?slower|slower please|too fast|more slowly)$/.test(text)) return { type: 'repeat_slower' };
+  if (/^(?:louder|speak up|i can't hear (?:you)?|volume up)$/.test(text)) return { type: 'louder' };
+  return null;
 }

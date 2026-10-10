@@ -29,7 +29,7 @@ export function planRoute(graph: Graph, input: PlanInput): RouteResult {
       ok: false,
       reason: 'no_route',
       message: stepFree
-        ? `No step-free route found from ${from.name} to ${to.name}. In the ETH data, some rooms, such as those on half floors, can only be reached by stairs.`
+        ? `No step-free route found from ${from.name} to ${to.name}.${profile.avoidElevatorAt?.length ? ' Without the elevator you reported, there is no other step-free way.' : ' In the ETH data, some rooms, such as those on half floors, can only be reached by stairs.'}`
         : `No route found from ${from.name} to ${to.name}.`,
     };
   }
@@ -50,6 +50,8 @@ export function planRoute(graph: Graph, input: PlanInput): RouteResult {
   const warnings: string[] = [];
   if (profile.needs.includes('wheelchair')) warnings.push('Door widths and automatic doors are not in the ETH data.');
   if (elevators) warnings.push('Elevator status is not live. If an elevator is out of service, ask for a new route.');
+  if (profile.avoidElevatorAt?.length) warnings.push('Avoids the elevator you reported as out of service.');
+  if (path.edges.some((e) => e.synthetic)) warnings.push('This route uses an elevator that is in the ETH floor plans but missing from their routing data. Check it works before relying on it.');
   const notes = (opts.overrides as Overrides | undefined)?.notes ?? {};
   for (const e of path.edges) if (notes[e.id]) warnings.push(notes[e.id]);
 

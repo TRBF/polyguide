@@ -98,10 +98,33 @@ export interface CostModel {
   travelTime(edge: GraphEdge, ctx: RoutingContext): number;
 }
 
+/**
+ * Elevator edges of every shaft that touches one of `nodes`: an out-of-service elevator is out on every floor,
+ * so we follow elevator edges from the reported node and close them all.
+ */
+export function closedElevatorShafts(graph: Graph, nodes: string[]): string[] {
+  const closed = new Set<string>();
+  const seen = new Set<string>();
+  const stack = [...nodes];
+  while (stack.length) {
+    const id = stack.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    for (const { edge, to } of graph.adj.get(id) ?? []) {
+      // Only the shaft itself: same-floor "elevator" pathway pieces (platform lifts) belong to other lifts.
+      if (edge.kind !== 'elevator' || edge.levelFrom === edge.levelTo) continue;
+      closed.add(edge.id);
+      stack.push(to);
+    }
+  }
+  return [...closed];
+}
+
 export function costModel(graph: Graph, profile: Profile, opts: ProfileOptions = {}): CostModel {
   const mods = modifiersFor(profile, opts);
   const speedMps = profile.speedMps ?? Math.min(BASE_SPEED_MPS, ...mods.map((m) => m.speedMps ?? Infinity));
   const closed = new Set(opts.overrides?.closedEdges ?? []);
+  for (const id of closedElevatorShafts(graph, profile.avoidElevatorAt ?? [])) closed.add(id);
   const edgeMult = opts.overrides?.edgeMultipliers ?? {};
 
   const travelTime = (e: GraphEdge, ctx: RoutingContext): number => {
@@ -125,6 +148,8 @@ export function costModel(graph: Graph, profile: Profile, opts: ProfileOptions =
     travelTime,
     edgeCost(e, ctx) {
       if (closed.has(e.id)) return Infinity;
+      // Inferred (unverified) connections: only worth it when they save real time or are the only way.
+      const unverified = e.synthetic ? 60 : 0;
       let mult = edgeMult[e.id] ?? 1;
       let pen = 0;
       for (const m of mods) {
@@ -132,7 +157,7 @@ export function costModel(graph: Graph, profile: Profile, opts: ProfileOptions =
         pen += m.penaltyS?.(e, ctx) ?? 0;
         if (mult === Infinity || pen === Infinity) return Infinity;
       }
-      return travelTime(e, ctx) * mult + pen;
+      return travelTime(e, ctx) * mult + pen + unverified;
     },
   };
 }

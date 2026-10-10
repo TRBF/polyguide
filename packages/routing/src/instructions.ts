@@ -37,7 +37,8 @@ interface RawStep {
 const legFromLevel = (l: { edge: GraphEdge; a: GraphNode }) => (l.edge.from === l.a.id ? l.edge.levelFrom : l.edge.levelTo) ?? l.a.levelId;
 const legToLevel = (l: { edge: GraphEdge; b: GraphNode }) => (l.edge.to === l.b.id ? l.edge.levelTo : l.edge.levelFrom) ?? l.b.levelId;
 
-const isVertical = (e: GraphEdge) => e.source === 'transition' && e.kind !== 'entrance' && e.levelFrom !== e.levelTo;
+/** Floor changes, plus same-floor lifts (ETH maps a few platform lifts as level "elevator" pathways). */
+const isVertical = (e: GraphEdge) => (e.source === 'transition' && e.kind !== 'entrance' && e.levelFrom !== e.levelTo) || e.kind === 'elevator';
 
 export function classifyTurn(deltaDeg: number): Maneuver {
   const a = Math.abs(deltaDeg);
@@ -117,19 +118,62 @@ export function buildSteps({ graph, nodes, edges, model, to, now = new Date() }:
     }
   }
 
-  /* 2b. Fold tiny horizontal steps into a horizontal neighbour on the same level (keeps the main direction). */
   const len = (s: RawStep) => s.legs.reduce((t, l) => t + l.edge.lengthM, 0);
+  const rise = (s: RawStep) => s.legs[s.legs.length - 1].b.z - s.legs[0].a.z;
+
+  /* 2a. A "vertical" piece that does not change height (walking across a flight's top landing) is not a floor
+     change: treat it as level walking on the floor where it happens. */
+  const flattened = new Set<RawStep>();
+  for (const s of raw) {
+    if (!s.vertical || s.kind === 'elevator' || Math.abs(rise(s)) >= 0.5) continue;
+    flattened.add(s);
+    s.vertical = false;
+    s.levelId = s.legs[0].a.levelId ?? s.levelId;
+    for (const l of s.legs) {
+      l.vertical = false;
+      l.bearing = dist2D(l.a, l.b) >= MIN_SEG_M ? bearingDeg(l.a, l.b) : null;
+    }
+  }
+  // Re-join level pieces that 2a made adjacent to a level neighbour on the same floor.
+  for (let i = 1; i < raw.length; i++) {
+    const [a, b] = [raw[i - 1], raw[i]];
+    // Only pieces 2a flattened; ordinary level steps are split on purpose (turns).
+    if ((flattened.has(a) || flattened.has(b)) && !a.vertical && !b.vertical && a.levelId === b.levelId && a.kind !== 'entrance' && b.kind !== 'entrance') {
+      a.legs.push(...b.legs);
+      if (flattened.has(a)) a.kind = b.kind;
+      if (flattened.has(b)) flattened.add(a);
+      raw.splice(i, 1);
+      i--;
+    }
+  }
+
+  /* 2a'. One descent through a mid landing (flight, a short level piece < 3 m, flight of the same kind and
+     direction) is a single "take the stairs" step, not stairs / continue 1 m / stairs. */
+  for (let i = 1; i + 1 < raw.length; i++) {
+    const [a, m, b] = [raw[i - 1], raw[i], raw[i + 1]];
+    if (a.vertical && b.vertical && !m.vertical && a.kind === b.kind && len(m) < 3 && Math.sign(rise(a)) === Math.sign(rise(b))) {
+      a.legs.push(...m.legs.map((l) => ({ ...l, vertical: true, bearing: null })), ...b.legs);
+      raw.splice(i, 2);
+      i--;
+    }
+  }
+
+  /* 2b. Fold tiny horizontal steps into a horizontal neighbour on the same level (keeps the main direction). */
   const foldable = (a: RawStep | undefined, b: RawStep) => a && !a.vertical && !b.vertical && a.kind === b.kind && a.levelId === b.levelId;
+  // A tiny piece may fold into a neighbour of another level kind (a 1 m run of on-floor steps into the corridor);
+  // its legs keep the "(includes steps)" note. Doors (entrance) stay separate: they carry enter/leave.
+  const tinyFoldable = (a: RawStep | undefined, b: RawStep) =>
+    a && !a.vertical && !b.vertical && a.levelId === b.levelId && (a.kind === b.kind || (a.kind !== 'entrance' && b.kind !== 'entrance'));
   for (let i = 0; i < raw.length; i++) {
     const s = raw[i];
     if (raw.length < 2 || len(s) >= TINY_STEP_M) continue;
     const nxt = raw[i + 1];
     const prv = raw[i - 1];
-    if (nxt && foldable(nxt, s)) {
+    if (nxt && tinyFoldable(nxt, s)) {
       nxt.legs = [...s.legs, ...nxt.legs];
       nxt.firstBearing ??= s.firstBearing;
       nxt.lastBearing ??= s.lastBearing;
-    } else if (prv && foldable(prv, s)) {
+    } else if (prv && tinyFoldable(prv, s)) {
       prv.legs.push(...s.legs);
       prv.lastBearing = s.lastBearing ?? prv.lastBearing;
     } else continue;
@@ -198,7 +242,9 @@ export function buildSteps({ graph, nodes, edges, model, to, now = new Date() }:
     const polyline: [number, number][] = [[first.a.lon, first.a.lat], ...s.legs.map((l) => [l.b.lon, l.b.lat] as [number, number])];
     const next = raw[i + 1];
     const prev = raw[i - 1];
-    const toLevelId = s.vertical ? legToLevel(last) ?? undefined : undefined;
+    const endLevel = s.vertical ? legToLevel(last) ?? undefined : undefined;
+    // A same-floor lift has no target floor.
+    const toLevelId = endLevel && endLevel !== s.levelId ? endLevel : undefined;
 
     /* Maneuver */
     let maneuver: Maneuver;
@@ -258,7 +304,7 @@ export function buildSteps({ graph, nodes, edges, model, to, now = new Date() }:
 
     /* Text + speech */
     const target = !next
-      ? { text: ` to ${to.name}`, speech: ` to ${to.kind === 'room' ? speakRoom(to.name) : to.name}` }
+      ? { text: ` to ${to.kind === 'entrance' && to.label ? to.label : to.name}`, speech: ` to ${to.kind === 'room' ? speakRoom(to.name) : to.kind === 'entrance' && to.label ? `the ${to.label.replace(/^./, (c) => c.toLowerCase())}` : to.name}` }
       : next.vertical
         ? next.kind === 'elevator' ? { text: ' to the elevator', speech: ' to the elevator' }
         : next.kind === 'ramp' ? { text: ' to the ramp', speech: ' to the ramp' }
@@ -273,6 +319,9 @@ export function buildSteps({ graph, nodes, edges, model, to, now = new Date() }:
       const what = s.kind === 'elevator' ? 'elevator' : s.kind === 'ramp' ? 'ramp' : s.kind === 'escalator' ? 'escalator' : 'stairs';
       text = `Take the ${what} ${dir} to floor ${floorName(toLevelId)}`;
       speech = `Take the ${what} ${dir} to ${speakFloor(toLevelId)}.` + (s.kind === 'elevator' ? ' Say "done" when you are out of the elevator.' : '');
+    } else if (s.vertical) {
+      text = 'Take the lift';
+      speech = 'Take the lift here, on this floor. Say "done" when you are out of the lift.';
     } else if (maneuver === 'enter_building' || maneuver === 'exit_building') {
       const verb = maneuver === 'enter_building' ? 'Enter the building' : 'Leave the building';
       text = `${verb}, then go ${dm} m${target.text}`;
@@ -291,6 +340,14 @@ export function buildSteps({ graph, nodes, edges, model, to, now = new Date() }:
     if (!s.vertical && s.legs.some((l) => l.edge.kind === 'stairs')) {
       text += ' (includes steps)';
       speech += ' There are steps on the way.';
+    }
+    // Doors along the way (ETH door transitions kept as door nodes); the last node is announced by the next step.
+    const doorAt = s.vertical ? -1 : s.legs.slice(0, -1).findIndex((l) => l.b.door);
+    if (doorAt >= 0) {
+      text += ' (through a door)';
+      speech += ' You will go through a door.';
+      const atM = s.legs.slice(0, doorAt + 1).reduce((t, l) => t + l.edge.lengthM, 0);
+      landmarks.push({ label: 'door', kind: 'entrance', side: 'ahead', atDistanceM: Math.round(atM) });
     }
     const passRooms = landmarks.filter((l) => l.kind === 'room_sign' && l.side !== 'ahead' && l.placeId !== to.id).slice(0, 2);
     if (passRooms.length && distanceM > 8) {
@@ -325,9 +382,10 @@ export function buildSteps({ graph, nodes, edges, model, to, now = new Date() }:
     const rel = normalize180(bearingDeg(endNode, destXY) - lastHz.bearing!);
     side = Math.abs(rel) < 30 ? 'ahead' : rel > 0 ? 'right' : 'left';
   }
-  const spokenName = to.kind === 'room' ? capitalize(speakRoom(to.name)) : to.name;
+  // Entrances have German names in the ETH data ("Haupteingang HG E"); speak the English label.
+  const spokenName = to.kind === 'room' ? capitalize(speakRoom(to.name)) : to.kind === 'entrance' && to.label ? `The ${to.label.replace(/^./, (c) => c.toLowerCase())}` : to.name;
   // Skip the friendly label when the name already contains it ("Accessible toilet, floor D").
-  const extra = to.label && !to.name.toLowerCase().includes(to.label.toLowerCase()) ? to.label : '';
+  const extra = to.kind !== 'entrance' && to.label && !to.name.toLowerCase().includes(to.label.toLowerCase()) ? to.label : '';
   const label = extra ? ` (${extra})` : '';
   const sideText = side === 'ahead' ? 'ahead of you' : `on your ${side}`;
   steps.push({

@@ -19,6 +19,7 @@ const needSchema = z.enum(['wheelchair', 'blind', 'lowVision', 'lowStamina', 'av
 const profileSchema = z.object({
   needs: z.array(needSchema).default([]),
   avoidStairs: z.boolean().optional(),
+  avoidElevatorAt: z.array(z.string()).max(20).optional(),
   speedMps: z.number().positive().max(5).optional(),
   stepLengthM: z.number().positive().optional(),
   language: z.enum(['en', 'de']).optional(),

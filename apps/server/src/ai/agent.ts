@@ -1,0 +1,225 @@
+/**
+ * POST /api/agent: the voice agent. Every sentence the user says (Whisper or the browser recognizer) or types
+ * comes here with the app's state; a text model with structured output decides what the user wants and pulls
+ * out the places they named. The server — not the model — resolves those names against the HG graph, so a room
+ * is never invented, and writes the confirmation sentence itself ("From HG F 7 to HG F 30, the Audimax. Is that
+ * right?"). The client executes the action; nothing here routes or navigates.
+ *
+ * The system prompt lists every HG room code, named place, entrance and room type. It is static (built once from
+ * the graph), so the provider can cache it.
+ */
+import { Hono } from 'hono';
+import { z } from 'zod';
+import { USE_TYPES, useTypeFromText, type AgentAction, type AgentRequest, type AgentResponse, type Need, type Place } from '@polyguide/shared';
+import { getGraph, getPlace, matchPlaces, normRoom, searchPlaces } from '../graphStore';
+import { classifyError, describeError, getOpenAI, reasoningEffort, textModel, withTimeout } from './openai';
+
+const TIMEOUT_MS = 6000;
+const MAIN_ENTRANCE = 'pl_lm_137';
+
+const ACTIONS = ['set_trip', 'confirm', 'reject', 'choose_option', 'set_needs', 'start', 'next', 'back', 'repeat', 'stop', 'where_am_i', 'whats_ahead', 'emergency', 'elevator_broken', 'slower', 'faster', 'settings', 'help', 'none'] as const satisfies readonly AgentAction[];
+const NEEDS = ['wheelchair', 'blind', 'lowVision', 'avoidStairs'] as const;
+
+const requestSchema = z.object({
+  utterance: z.string().min(1).max(500),
+  context: z.object({
+    phase: z.enum(['trip', 'confirm', 'ready', 'navigate', 'arrived']),
+    from: z.object({ id: z.string(), name: z.string() }).optional(),
+    to: z.object({ id: z.string(), name: z.string() }).optional(),
+    options: z.array(z.object({ id: z.string(), name: z.string() })).max(8).optional(),
+    needs: z.array(z.enum(['wheelchair', 'blind', 'lowVision', 'lowStamina', 'avoidCrowds'])).default([]),
+    avoidStairs: z.boolean().optional(),
+    step: z.string().max(300).optional(),
+  }),
+  language: z.enum(['en', 'de']).optional(),
+});
+
+const modelOutput = z.object({
+  action: z.enum(ACTIONS),
+  from_text: z.string().nullable(),
+  to_text: z.string().nullable(),
+  option: z.number().int().nullable(),
+  needs_add: z.array(z.enum(NEEDS)),
+  needs_remove: z.array(z.enum(NEEDS)),
+  reply: z.string(),
+});
+
+const JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['action', 'from_text', 'to_text', 'option', 'needs_add', 'needs_remove', 'reply'],
+  properties: {
+    action: { type: 'string', enum: ACTIONS },
+    from_text: { type: ['string', 'null'], description: 'Where the user is now, as a room code ("HG F 7") or a place ("main entrance", "Audimax"). null if not said.' },
+    to_text: { type: ['string', 'null'], description: 'Where the user wants to go, same format. "nearest toilet" etc. allowed. null if not said.' },
+    option: { type: ['integer', 'null'], description: '1-based choice when picking from options read out.' },
+    needs_add: { type: 'array', items: { type: 'string', enum: NEEDS } },
+    needs_remove: { type: 'array', items: { type: 'string', enum: NEEDS } },
+    reply: { type: 'string', description: 'At most 25 words to speak back. For set_trip leave it empty: the app writes the confirmation.' },
+  },
+} as const;
+
+/* ───────────── Static system prompt (built once from the graph) ───────────── */
+
+let systemPrompt: string | null = null;
+function buildSystemPrompt(): string {
+  if (systemPrompt) return systemPrompt;
+  const g = getGraph();
+  const byFloor = new Map<string, string[]>();
+  for (const p of g.places) {
+    if (p.kind !== 'room') continue;
+    const floor = p.levelId.split('.').pop()!;
+    (byFloor.get(floor) ?? byFloor.set(floor, []).get(floor)!).push(p.name.replace(/^HG\s+/, ''));
+  }
+  const floors = [...g.levels].map((l) => l.id.split('.').pop()!).filter((f) => byFloor.has(f));
+  const rooms = floors.map((f) => `${f}: ${byFloor.get(f)!.join(', ')}`).join('\n');
+  const named = g.places.filter((p) => p.kind === 'room' && p.label).map((p) => `${p.label} = ${p.name}`).join('; ');
+  const entrances = [...new Set(g.places.filter((p) => p.kind === 'entrance').map((p) => p.label ?? p.name))].join('; ');
+  const poiTypes = [...new Set(g.places.filter((p) => p.kind === 'poi').map((p) => p.label).filter(Boolean))].join(', ');
+  const roomTypes = [...new Set(Object.values(USE_TYPES))].join(', ');
+  systemPrompt = `You are the voice agent of PolyGuide, an indoor navigation app for blind, low-vision and wheelchair users in the ETH Zürich main building (HG).
+The user speaks; speech-to-text may garble room codes ("F seven" = "F 7", "H G E forty one" = "HG E 41", "F thirty point one" = "F 30.1", "k30" = "K 30"). Decide what they want and fill the JSON.
+
+Room codes are "HG <floor> <number>". Floors from bottom to top: ${floors.join(', ')} (EO, FO, GO… are half floors). Rooms by floor (without "HG"):
+${rooms}
+Named places: ${named}.
+Entrances: ${entrances}.
+Facilities: ${poiTypes}. Room types: ${roomTypes}.
+
+Actions:
+- set_trip: the user names where they are and/or where to go ("I'm in F7 and want to get to F30", "take me to the Audimax", "I'm at the main entrance"). Put the start in from_text and the goal in to_text, normalised to a room code from the list when it is a room ("HG F 7"), else the place as said ("nearest toilet", "main entrance", "a seminar room"). Leave reply empty.
+- confirm / reject: yes or no to the trip the app just proposed (phase "confirm"). "Yes, start", "correct", "let's go" = confirm. "No", "wrong" = reject; if they also correct a place, use set_trip instead.
+- choose_option: picking from options the app read out ("the second one", "number 2", "F 33.1") → option = its number.
+- set_needs: "I'm blind", "I use a wheelchair", "avoid stairs", "I'm not in a wheelchair" → needs_add / needs_remove (wheelchair, blind, lowVision, avoidStairs). Reply with a short confirmation.
+- start: begin navigation of a ready route. next, back, repeat, stop: step commands. where_am_i, whats_ahead: questions while walking.
+- emergency: danger, hurt, fell, call for help. elevator_broken: an elevator is out of service.
+- slower, faster: speech speed. settings: open settings. help: what can I say.
+- none: anything else; reply briefly and helpfully (e.g. ask where they are or where they want to go). Never claim a path is safe or clear.
+The app state comes with each message. Keep replies short, plain, and spoken-friendly.`;
+  return systemPrompt;
+}
+
+/* ───────────── Place resolution (server-side, against the graph) ───────────── */
+
+interface Resolved {
+  place?: Place;
+  options?: Place[];
+}
+
+const spoken = (p: Place) => (p.kind === 'entrance' && p.label ? p.label : p.label && p.kind === 'room' ? `${p.name}, the ${p.label}` : p.name);
+
+/** "nearest toilet", "a seminar room", "exit", "Audimax", "HG F 7" → a place, or options when ambiguous. */
+export function resolvePlace(text: string, near: Place | undefined, needs: string[]): Resolved {
+  let q = text.trim().replace(/^(?:the|a|an|room)\s+/i, '').replace(/^(?:nearest|closest)\s+/i, '');
+  const wantsNearest = /^(?:the\s+)?(?:nearest|closest)\s/i.test(text.trim()) || /^(?:a|an|any)\s/i.test(text.trim());
+  const g = getGraph();
+  const ref = near ?? getPlace(MAIN_ENTRANCE);
+  // Exits are the building's entrances.
+  if (/^(?:exit|way out|main exit|building exit)$/i.test(q)) {
+    const entrances = g.places.filter((p) => p.kind === 'entrance' && p.nodeId !== near?.nodeId);
+    const sorted = ref ? entrances.sort((a, b) => dist(ref, a) - dist(ref, b)) : entrances;
+    return { place: sorted[0] };
+  }
+  if (needs.includes('wheelchair') && /\b(?:toilet|bathroom|restroom|wc|loo)\b/i.test(q) && !/accessible/i.test(q)) q = 'accessible toilet';
+  const generic = wantsNearest || Boolean(useTypeFromText(q)) || /\b(?:toilet|bathroom|restroom|wc|elevator|lift|cafe|cafeteria|food|library|printer|printing|lounge|cloakroom|entrance)\b/i.test(q);
+  if (generic) {
+    const found = searchPlaces(q, 8, undefined, ref?.id).filter((p) => p.nodeId !== near?.nodeId);
+    return { place: found[0] };
+  }
+  // A room code or a name.
+  const exact = g.places.find((p) => p.kind === 'room' && (normRoom(p.name) === normRoom(q) || normRoom(p.name) === `HG${normRoom(q)}`));
+  if (exact) return { place: exact };
+  const matches = matchPlaces(q, { limit: 5 }).filter((m) => m.place.kind !== 'poi' || !/^elevator/i.test(m.place.name));
+  if (!matches.length) return {};
+  const [best, second] = matches;
+  if (best.confidence >= 0.9 || (best.confidence >= 0.6 && (!second || best.confidence - second.confidence >= 0.2))) return { place: best.place };
+  return { options: matches.slice(0, 4).map((m) => m.place) };
+}
+
+function dist(a: Place, b: Place): number {
+  const g = getGraph();
+  const pa = g.xy(a);
+  const pb = g.xy(b);
+  return Math.hypot(pa.x - pb.x, pa.y - pb.y) + 20 * Math.abs((a.verticalOrder ?? 0) - (b.verticalOrder ?? 0));
+}
+
+/** The confirmation the user hears for a proposed trip (written here, not by the model, so it is exact). */
+export function tripReply(from?: Place, to?: Place, options?: Place[], optionsFor?: 'from' | 'to'): string {
+  if (options?.length) {
+    const list = options.map((p, i) => `${i + 1}, ${spoken(p)}`).join('; ');
+    return `${optionsFor === 'from' ? 'Where are you? ' : 'Which one? '}I found: ${list}. Say the number.`;
+  }
+  if (from && to) return `From ${spoken(from)} to ${spoken(to)}. Is that right?`;
+  if (to) return `Going to ${spoken(to)}. Where are you now? Say a room number or scan a sign.`;
+  if (from) return `You are at ${spoken(from)}. Where do you want to go?`;
+  return 'I did not catch the place. Say a room number, like H G F 30, or a place like the nearest toilet.';
+}
+
+export const agentRoutes = new Hono();
+
+agentRoutes.post('/agent', async (c) => {
+  const parsed = requestSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json<AgentResponse>({ ok: false, reason: 'invalid_request', message: parsed.error.issues.map((i) => i.path.join('.')).join(', ') }, 400);
+  const req = parsed.data as AgentRequest;
+  const openai = getOpenAI();
+  if (!openai) return c.json<AgentResponse>({ ok: false, reason: 'disabled', message: 'The voice agent needs an OpenAI key on the server.' });
+  const ctx = req.context;
+  const userText = [
+    `Phase: ${ctx.phase}`,
+    `From: ${ctx.from?.name ?? 'unknown'}`,
+    `To: ${ctx.to?.name ?? 'unknown'}`,
+    ctx.options?.length ? `Options read out: ${ctx.options.map((o, i) => `${i + 1}. ${o.name}`).join('; ')}` : '',
+    `Needs: ${[...ctx.needs, ...(ctx.avoidStairs ? ['avoidStairs'] : [])].join(', ') || 'none'}`,
+    ctx.step ? `Current instruction: ${ctx.step}` : '',
+    `User said: "${req.utterance.trim()}"`,
+  ].filter(Boolean).join('\n');
+
+  const started = Date.now();
+  let aborted = false;
+  try {
+    const response = await withTimeout(TIMEOUT_MS, (signal) => {
+      signal.addEventListener('abort', () => (aborted = true), { once: true });
+      return openai.responses.create(
+        {
+          model: textModel(),
+          instructions: buildSystemPrompt(),
+          input: userText,
+          text: { format: { type: 'json_schema', name: 'agent', schema: JSON_SCHEMA, strict: true } },
+          reasoning: reasoningEffort(),
+          store: false,
+        },
+        { signal },
+      );
+    });
+    const out = modelOutput.safeParse(JSON.parse(response.output_text));
+    if (!out.success) return c.json<AgentResponse>({ ok: false, reason: 'model_error', message: 'The agent answered in an unexpected format.' });
+    const m = out.data;
+    const latencyMs = Date.now() - started;
+    const reply = m.reply.trim().split(/\s+/).slice(0, 30).join(' ');
+
+    if (m.action === 'set_trip' || ((m.action === 'confirm' || m.action === 'none') && (m.from_text || m.to_text))) {
+      const knownFrom = ctx.from ? getPlace(ctx.from.id) : undefined;
+      const fromR = m.from_text ? resolvePlace(m.from_text, undefined, ctx.needs) : {};
+      const from = fromR.place ?? (m.from_text ? undefined : knownFrom);
+      const toR = m.to_text ? resolvePlace(m.to_text, from ?? knownFrom, ctx.needs) : {};
+      const to = toR.place ?? (m.to_text ? undefined : ctx.to ? getPlace(ctx.to.id) : undefined);
+      if (from && to && from.id === to.id) {
+        // Usually "take me back" heard as the place the user already stands in.
+        return c.json<AgentResponse>({ ok: true, action: 'set_trip', reply: `You are already at ${spoken(from)}. Where do you want to go?`, from, latencyMs });
+      }
+      const options = fromR.options ?? toR.options;
+      const optionsFor = fromR.options ? 'from' : toR.options ? 'to' : undefined;
+      const missingNamed = (m.from_text && !fromR.place && !fromR.options) || (m.to_text && !toR.place && !toR.options);
+      const text = missingNamed && !options
+        ? `I could not find ${m.to_text && !toR.place ? m.to_text : m.from_text}. Say a room number, like H G F 30.`
+        : tripReply(from, to, options, optionsFor);
+      return c.json<AgentResponse>({ ok: true, action: 'set_trip', reply: text, from, to, options, optionsFor, latencyMs });
+    }
+    const needs = m.action === 'set_needs' ? { add: m.needs_add, remove: m.needs_remove } as { add: (Need | 'avoidStairs')[]; remove: (Need | 'avoidStairs')[] } : undefined;
+    return c.json<AgentResponse>({ ok: true, action: m.action, reply, option: m.option ?? undefined, needs, latencyMs });
+  } catch (err) {
+    const { reason, message } = classifyError(err, aborted);
+    console.warn(`agent failed: ${reason} (${describeError(err)})`);
+    return c.json<AgentResponse>({ ok: false, reason, message });
+  }
+});

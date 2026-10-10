@@ -31,6 +31,11 @@ export interface Profile {
   needs: Need[];
   /** Force stairs = forbidden for anyone (temporary injury, luggage…). */
   avoidStairs?: boolean;
+  /**
+   * Nodes where the user found an elevator out of service ("the elevator is not working").
+   * The whole elevator shaft through each node is avoided. Additive (after kickoff).
+   */
+  avoidElevatorAt?: NodeId[];
   /** Override the profile's default walking speed (m/s). */
   speedMps?: number;
   /** Step length used by the pedometer (m). Default 0.7. */
@@ -78,6 +83,8 @@ export interface GraphNode extends LatLon {
   degree: number;
   isDecisionPoint: boolean;
   indoor: boolean;
+  /** A doorway (ETH door transition collapsed onto this node). Additive. */
+  door?: boolean;
 }
 
 export interface GraphEdge {
@@ -95,6 +102,11 @@ export interface GraphEdge {
   source: 'pathway' | 'transition';
   /** OBJECTID in the ETH layer, for debugging. */
   sourceOid: number;
+  /**
+   * Not in ETH's routing network but inferred from its floor plans (e.g. an elevator shaft present on every floor
+   * without transitions). Routes using it warn the user to verify on site. Additive.
+   */
+  synthetic?: boolean;
 }
 
 export interface GraphJson {
@@ -346,6 +358,58 @@ export interface IntentRequest {
   language?: 'en' | 'de';
 }
 
+/* ───────────────────── Voice agent (POST /api/agent). Additive. ───────────────────── */
+
+/** What the agent decided the user wants. The client executes it; the agent never routes on its own. */
+export type AgentAction =
+  | 'set_trip' // from and/or to named → propose, ask "is that right?"
+  | 'confirm' // yes to the pending proposal → start
+  | 'reject' // no → ask again
+  | 'choose_option' // "the second one"
+  | 'set_needs' // "I'm blind", "I use a wheelchair", "no stairs"
+  | 'start' | 'next' | 'back' | 'repeat' | 'stop'
+  | 'where_am_i' | 'whats_ahead'
+  | 'emergency' | 'elevator_broken'
+  | 'slower' | 'faster' | 'settings' | 'help'
+  | 'none'; // small talk, or nothing to do: just speak the reply
+
+export interface AgentContext {
+  phase: 'trip' | 'confirm' | 'ready' | 'navigate' | 'arrived';
+  from?: { id: PlaceId; name: string };
+  to?: { id: PlaceId; name: string };
+  /** Options read out to the user, numbered from 1. */
+  options?: { id: PlaceId; name: string }[];
+  needs: Need[];
+  avoidStairs?: boolean;
+  /** Current instruction while navigating. */
+  step?: string;
+}
+
+export interface AgentRequest {
+  utterance: string;
+  context: AgentContext;
+  language?: 'en' | 'de';
+}
+
+export type AgentResponse =
+  | {
+      ok: true;
+      action: AgentAction;
+      /** One or two short sentences to speak and show. */
+      reply: string;
+      /** set_trip: places the agent resolved (either may be missing → ask for it). */
+      from?: Place;
+      to?: Place;
+      /** set_trip with an ambiguous name: candidates to choose from (numbered in `reply`). */
+      options?: Place[];
+      /** Which side `options` are for. */
+      optionsFor?: 'from' | 'to';
+      option?: number;
+      needs?: { add: (Need | 'avoidStairs')[]; remove: (Need | 'avoidStairs')[] };
+      latencyMs: number;
+    }
+  | { ok: false; reason: 'disabled' | 'timeout' | 'model_error' | 'rate_limited' | 'invalid_request'; message: string };
+
 /* ───────────────────────────── Guidance hook (B → C seam) ───────── */
 
 export type TrackerPhase = 'idle' | 'localizing' | 'navigating' | 'approaching' | 'rerouting' | 'arrived';
@@ -418,6 +482,7 @@ export const API = {
   localize: '/api/localize',
   vision: '/api/vision/check',
   intent: '/api/intent',
+  agent: '/api/agent',
   devCompare: '/api/dev/compare',
 } as const;
 

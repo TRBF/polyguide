@@ -45,7 +45,7 @@ export interface BuildReport {
   components: number[]; // sizes (nodes), largest first
   droppedNodes: number;
   edgeKindsPerLevel: Record<string, Partial<Record<EdgeKind, number>>>;
-  transitions: { kept: number; foreign: number; endpointSnappedToSegment: number; failed: { oid: number; kind: EdgeKind; reason: string }[] };
+  transitions: { kept: number; foreign: number; endpointSnappedToSegment: number; doors: number; synthetic: number; landings: number; joinedPieces: number; failed: { oid: number; kind: EdgeKind; reason: string }[] };
   droppedEdges: Record<string, number>;
   places: { rooms: number; entrances: number; pois: number; roomsWithoutNode: number; roomsSnappedToDoor: number; roomsNotStepFree: number };
   lengthScaling: { scaled: number; unscaled: number; suspicious: number };
@@ -119,6 +119,20 @@ export function roomAliases(name: string, label?: string): string[] {
   return [...out];
 }
 
+/** "Eingang HG Südflügel E" → "South wing entrance, floor E"; "Haupteingang HG E" → "Main entrance, floor E". */
+export function entranceLabel(desc: string): string {
+  const floor = desc.match(/\s([A-Z]{1,2})$/)?.[1];
+  const where = /haupteingang/i.test(desc) ? 'Main entrance'
+    : /polyterrasse/i.test(desc) ? 'Polyterrasse entrance'
+    : /garage/i.test(desc) ? 'Garage entrance'
+    : /südflügel/i.test(desc) ? 'South wing entrance'
+    : /nordflügel/i.test(desc) ? 'North wing entrance'
+    : /süd/i.test(desc) ? 'South entrance'
+    : /nord/i.test(desc) ? 'North entrance'
+    : 'Entrance';
+  return floor ? `${where}, floor ${floor}` : where;
+}
+
 function slug(s: string) {
   return s
     .toLowerCase()
@@ -144,6 +158,9 @@ interface WorkNode extends XYZ {
   levelId: string | null;
   verticalOrder: number | null;
   indoor: boolean;
+  /** Created by (or merged with) a pathway vertex. Transition endpoints may only land on these. */
+  fromPathway?: boolean;
+  door?: boolean;
 }
 
 interface WorkEdge {
@@ -159,6 +176,7 @@ interface WorkEdge {
   levelTo: string | null;
   source: GraphEdge['source'];
   sourceOid: number;
+  synthetic?: boolean;
 }
 
 /* ───────────── Build ───────────── */
@@ -170,7 +188,7 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
     components: [],
     droppedNodes: 0,
     edgeKindsPerLevel: {},
-    transitions: { kept: 0, foreign: 0, endpointSnappedToSegment: 0, failed: [] },
+    transitions: { kept: 0, foreign: 0, endpointSnappedToSegment: 0, doors: 0, synthetic: 0, landings: 0, joinedPieces: 0, failed: [] },
     droppedEdges: {},
     places: { rooms: 0, entrances: 0, pois: 0, roomsWithoutNode: 0, roomsSnappedToDoor: 0, roomsNotStepFree: 0 },
     lengthScaling: { scaled: 0, unscaled: 0, suspicious: 0 },
@@ -194,7 +212,7 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
   const cellKey = (ix: number, iy: number, iz: number) => `${ix},${iy},${iz}`;
 
   /** Find an existing node within one merge quantum (checks neighbouring cells, so bucket edges don't split nodes). */
-  function findNode(p: XYZ): number | undefined {
+  function findNode(p: XYZ, pathwayOnly = false): number | undefined {
     const ix = Math.round(p.x / XY_Q);
     const iy = Math.round(p.y / XY_Q);
     const iz = Math.round(p.z / Z_Q);
@@ -205,6 +223,7 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
         for (let dz = -1; dz <= 1; dz++)
           for (const i of grid.get(cellKey(ix + dx, iy + dy, iz + dz)) ?? []) {
             const q = nodes[i];
+            if (pathwayOnly && !q.fromPathway) continue;
             const d = dist2D(p, q);
             if (d <= XY_Q && Math.abs(q.z - p.z) <= Z_Q / 2 && d < bestD) {
               best = i;
@@ -223,6 +242,7 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
         q.verticalOrder = attrs.verticalOrder;
       }
       q.indoor ||= attrs.indoor;
+      q.fromPathway ||= attrs.fromPathway;
       return found;
     }
     const i = nodes.push({ ...p, ...attrs }) - 1;
@@ -244,6 +264,9 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
     pts: XYZ[],
     base: Omit<WorkEdge, 'id' | 'from' | 'to' | 'lengthM' | 'levelFrom' | 'levelTo'> & { levelFrom: string | null; levelTo: string | null },
     length3d: unknown,
+    /** Transitions: every segment of one flight/shaft carries the flight's own from→to levels, so a flight is
+     *  one vertical step (not "continue straight 1 m" in mid-flight, nor a level borrowed from a neighbour). */
+    wholeLevels = false,
   ) {
     const segLens = pts.slice(1).map((p, i) => dist3D(pts[i], p));
     const total = segLens.reduce((a, b) => a + b, 0);
@@ -266,8 +289,8 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
         to: b,
         lengthM: Math.max(0.01, segLens[i] * scale),
         // Vertical edges: the level changes along the transition polyline.
-        levelFrom: i === 0 ? base.levelFrom : nodes[a].levelId ?? base.levelFrom,
-        levelTo: i + 2 === nodeIdx.length ? base.levelTo : nodes[b].levelId ?? base.levelTo,
+        levelFrom: wholeLevels || i === 0 ? base.levelFrom : nodes[a].levelId ?? base.levelFrom,
+        levelTo: wholeLevels || i + 2 === nodeIdx.length ? base.levelTo : nodes[b].levelId ?? base.levelTo,
       });
     }
   }
@@ -296,7 +319,7 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
     const levelId: string = p.LEVEL_ID;
     const indoor = p.LOCATION !== 1;
     const pts = f.geometry.coordinates.map(toXYZ);
-    const idx = pts.map((pt) => addNode(pt, { levelId, verticalOrder: p.VERTICAL_ORDER ?? null, indoor }));
+    const idx = pts.map((pt) => addNode(pt, { levelId, verticalOrder: p.VERTICAL_ORDER ?? null, indoor, fromPathway: true }));
     const before = edges.length;
     addPolyline(
       idx,
@@ -336,7 +359,7 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
     if (t > 0.98) return seg.b;
     const mid = addNode(
       { x: A.x + t * (B.x - A.x), y: A.y + t * (B.y - A.y), z: A.z + t * (B.z - A.z) },
-      { levelId: A.levelId, verticalOrder: A.verticalOrder, indoor: A.indoor },
+      { levelId: A.levelId, verticalOrder: A.verticalOrder, indoor: A.indoor, fromPathway: true },
     );
     // Split edge: shorten the original, append the second half.
     const e = edges[seg.edgeIdx];
@@ -352,7 +375,63 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
 
   /* Transitions (vertical): keep only those whose two endpoints land on HG pathway nodes. */
   const hgFacility = `ETH.${input.facility}`;
-  for (const f of input.transitions.features) {
+  const knownLevels = new Set(input.levels.features.map((f) => String(f.properties.LEVEL_ID)));
+  /** ETH's declared floor for a transition end ("EO" → "ETH.HG.EO"), when it is a real HG level. */
+  const declaredLevel = (name: unknown): string | null => {
+    const id = name ? `${hgFacility}.${name}` : null;
+    return id && knownLevels.has(id) ? id : null;
+  };
+  /** Would this point reach a corridor (without changing the graph)? */
+  const reachesCorridor = (p: XYZ) =>
+    findNode(p, true) !== undefined ||
+    pathwaySegs.some((seg) => {
+      const A = nodes[seg.a];
+      const B = nodes[seg.b];
+      const { d, t } = pointSegment(p, A, B);
+      return d <= SEG_SNAP_XY && Math.abs(A.z + t * (B.z - A.z) - p.z) <= SNAP_Z;
+    });
+
+  /* ETH sometimes splits one flight into pieces: (1) pieces meeting at a landing that is not on a corridor
+     (J→K), (2) pieces of the same declared flight with a small gap between them (E→EO, E→F). Landings become
+     shared nodes; gapped pieces are joined into one flight. */
+  type TFeat = { properties: Record<string, any>; coords: number[][] };
+  const tFeats: TFeat[] = input.transitions.features
+    .filter((f) => (f.geometry?.coordinates?.length ?? 0) >= 2)
+    .map((f) => ({ properties: f.properties, coords: f.geometry!.coordinates }));
+  const near = (u: XYZ, v: XYZ, xy: number, z: number) => dist2D(u, v) <= xy && Math.abs(u.z - v.z) <= z;
+  const ends = (t: TFeat) => [toXYZ(t.coords[0]), toXYZ(t.coords[t.coords.length - 1])] as const;
+  // Only HG's own transitions (other buildings in the bbox are not ours to repair).
+  const ownFeats = tFeats.filter((t) => t.properties.FACILITY_ID === hgFacility);
+  for (const t of ownFeats) {
+    if (!edgeKind(t.properties.TRANSITION_TYPE) || t.properties.EMERGENCY === 1) continue;
+    for (const [k, pt] of ends(t).entries()) {
+      if (reachesCorridor(pt)) continue;
+      const shared = ownFeats.some((o) => o !== t && ends(o).some((q) => near(pt, q, 0.3, 0.3)));
+      if (!shared || findNode(pt, true) !== undefined) continue;
+      const lvl = declaredLevel(k === 0 ? t.properties.LEVEL_NAME_FROM : t.properties.LEVEL_NAME_TO);
+      addNode(pt, { levelId: lvl, verticalOrder: lvl ? Number(input.levels.features.find((f) => f.properties.LEVEL_ID === lvl)?.properties.VERTICAL_ORDER) : null, indoor: true, fromPathway: true });
+      report.transitions.landings++;
+    }
+  }
+  const consumed = new Set<TFeat>();
+  for (const a of ownFeats) {
+    if (consumed.has(a)) continue;
+    const aEnd = ends(a)[1];
+    if (reachesCorridor(aEnd)) continue;
+    const b = ownFeats.find((o) => {
+      if (o === a || consumed.has(o) || o.properties.TRANSITION_TYPE !== a.properties.TRANSITION_TYPE) return false;
+      if (o.properties.LEVEL_NAME_FROM !== a.properties.LEVEL_NAME_FROM || o.properties.LEVEL_NAME_TO !== a.properties.LEVEL_NAME_TO) return false;
+      const bStart = ends(o)[0];
+      return !reachesCorridor(bStart) && dist2D(aEnd, bStart) <= 3 && bStart.z - aEnd.z >= -0.5 && bStart.z - aEnd.z <= 2.5;
+    });
+    if (!b) continue;
+    a.coords = [...a.coords, ...b.coords];
+    a.properties = { ...a.properties, LENGTH_3D: undefined };
+    consumed.add(b);
+    report.transitions.joinedPieces++;
+  }
+
+  for (const f of tFeats.filter((t) => !consumed.has(t)).map((t) => ({ properties: t.properties, geometry: { coordinates: t.coords } }))) {
     const p = f.properties;
     const kind = edgeKind(p.TRANSITION_TYPE);
     const coords = f.geometry?.coordinates ?? [];
@@ -371,8 +450,9 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
     const pts = coords.map(toXYZ);
     const first = pts[0];
     const last = pts[pts.length - 1];
-    const a = findNode(first) ?? snapToSegment(first);
-    const b = findNode(last) ?? snapToSegment(last);
+    // Endpoints land on corridor (pathway) nodes only, never on another transition's interior nodes.
+    const a = findNode(first, true) ?? snapToSegment(first);
+    const b = findNode(last, true) ?? snapToSegment(last);
     if (a === undefined || b === undefined) {
       if (p.FACILITY_ID !== hgFacility && a === undefined && b === undefined) report.transitions.foreign++;
       else
@@ -383,7 +463,21 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
         });
       continue;
     }
-    const idx = [a, ...pts.slice(1, -1).map((pt) => addNode(pt, { levelId: null, verticalOrder: null, indoor: true })), b];
+    if (a === b) {
+      // A short door transition collapses onto one corridor node: keep it as a door, not as nothing.
+      if (kind === 'entrance') {
+        nodes[a].door = true;
+        report.transitions.doors++;
+      } else drop('transition collapsed to one node');
+      continue;
+    }
+    // Interior vertices take the level of the nearer end (by height), so no node is left without a floor.
+    const [za, zb] = [nodes[a].z, nodes[b].z];
+    const interior = pts.slice(1, -1).map((pt) => {
+      const end = Math.abs(pt.z - za) <= Math.abs(pt.z - zb) ? nodes[a] : nodes[b];
+      return addNode(pt, { levelId: end.levelId, verticalOrder: end.verticalOrder, indoor: true });
+    });
+    const idx = [a, ...interior, b];
     addPolyline(
       idx,
       [nodes[a], ...pts.slice(1, -1), nodes[b]],
@@ -394,12 +488,97 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
         indoor: nodes[a].indoor || nodes[b].indoor,
         source: 'transition',
         sourceOid: p.OBJECTID,
-        levelFrom: nodes[a].levelId,
-        levelTo: nodes[b].levelId,
+        // ETH's declared floors win over the floor of whatever node the end snapped to (t13537 F→G lands on FO),
+        // but are matched to the ends by height: some flights are drawn top-down while declared bottom-up.
+        ...(() => {
+          let [la, lb] = [declaredLevel(p.LEVEL_NAME_FROM) ?? nodes[a].levelId, declaredLevel(p.LEVEL_NAME_TO) ?? nodes[b].levelId];
+          const vo = (l: string | null) => (l ? Number(input.levels.features.find((f) => f.properties.LEVEL_ID === l)?.properties.VERTICAL_ORDER) : NaN);
+          if (la && lb && vo(la) !== vo(lb) && (vo(la) < vo(lb)) !== (nodes[a].z < nodes[b].z)) [la, lb] = [lb, la];
+          return { levelFrom: la, levelTo: lb };
+        })(),
       },
       p.LENGTH_3D,
+      true,
     );
     report.transitions.kept++;
+  }
+
+  /* Elevator shafts in the floor plans but missing from the routing network (e.g. HG "30.0009" on B…J):
+     link the corridor stubs that end inside the same shaft on adjacent floors. Flagged synthetic. */
+  addMissingElevatorShafts();
+
+  function addMissingElevatorShafts() {
+    const lifts = input.units.features.filter((f) => f.geometry && f.properties.USE_TYPE === 'Aufzug' && f.properties.RaumNr);
+    // Group the per-floor units of one shaft: same room number, footprints within 3 m.
+    const stacks = new Map<string, { levelId: string; vo: number; ring: { x: number; y: number }[]; c: { x: number; y: number } }[]>();
+    for (const f of lifts) {
+      const ring = (ringsOf(f.geometry!).reduce((x, y) => (y.length > x.length ? y : x)) as number[][]).map((c) => {
+        const [x, y] = proj.toXY(c[0], c[1]);
+        return { x, y };
+      });
+      const c = polygonCentroid(ring);
+      const key = String(f.properties.RaumNr);
+      const list = stacks.get(key) ?? stacks.set(key, []).get(key)!;
+      list.push({ levelId: f.properties.LEVEL_ID, vo: Number(f.properties.VERTICAL_ORDER), ring, c });
+    }
+    const inside = (p: { x: number; y: number }, ring: { x: number; y: number }[], margin: number) => {
+      let hit = false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const [a, b] = [ring[i], ring[j]];
+        if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) hit = !hit;
+      }
+      if (hit) return true;
+      for (let i = 0; i + 1 < ring.length; i++) if (pointSegment(p, ring[i], ring[i + 1]).d <= margin) return true;
+      return false;
+    };
+    for (const [key, floors] of stacks) {
+      if (floors.length < 2) continue;
+      const centre = floors[0].c;
+      const shaft = floors.filter((u) => dist2D(u.c, centre) <= 3).sort((u, v) => u.vo - v.vo);
+      // Corridor node that reaches into the shaft on each floor.
+      const nodeOn = shaft.map((u) => {
+        let best: number | undefined;
+        let bestD = Infinity;
+        for (let i = 0; i < nodes.length; i++) {
+          const q = nodes[i];
+          if (!q.fromPathway || q.levelId !== u.levelId || !inside(q, u.ring, 0.75)) continue;
+          const d = dist2D(q, u.c);
+          if (d < bestD) {
+            best = i;
+            bestD = d;
+          }
+        }
+        return best;
+      });
+      // Already modelled? Then any real elevator edge touches a node inside the shaft.
+      const modelled = edges.some(
+        (e) => e.kind === 'elevator' && e.source === 'transition' && !e.synthetic && e.levelFrom !== e.levelTo
+          && shaft.some((u) => [e.from, e.to].some((i) => nodes[i].levelId === u.levelId && inside(nodes[i], u.ring, 1.5))),
+      );
+      if (modelled) continue;
+      // Floors without a door into the shaft are passed through: link the nearest floors that have one.
+      const stops = shaft.map((u, k) => ({ u, node: nodeOn[k] })).filter((s): s is { u: (typeof shaft)[number]; node: number } => s.node !== undefined);
+      for (let k = 0; k + 1 < stops.length; k++) {
+        const [a, b] = [stops[k].node, stops[k + 1].node];
+        if (a === b) continue;
+        edges.push({
+          id: `e_syn_${slug(key)}_${k}`,
+          from: a,
+          to: b,
+          kind: 'elevator',
+          lengthM: Math.max(1, Math.abs(nodes[b].z - nodes[a].z)),
+          oneway: 'both',
+          rank: 1,
+          indoor: true,
+          levelFrom: nodes[a].levelId,
+          levelTo: nodes[b].levelId,
+          source: 'transition',
+          sourceOid: 0,
+          synthetic: true,
+        });
+        report.transitions.synthetic++;
+      }
+    }
   }
 
   /* Largest connected component (undirected). */
@@ -457,6 +636,7 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
       degree: nb.length,
       isDecisionPoint: decision,
       indoor: q.indoor,
+      ...(q.door ? { door: true } : {}),
     });
   }
 
@@ -473,6 +653,7 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
     levelTo: e.levelTo,
     source: e.source,
     sourceOid: e.sourceOid,
+    ...(e.synthetic ? { synthetic: true } : {}),
   }));
   for (const e of outEdges) {
     const lvl = e.levelFrom === e.levelTo ? e.levelFrom ?? '?' : `${e.levelFrom}→${e.levelTo}`;
@@ -645,7 +826,8 @@ function buildPlaces(
     const node = nearestNode(nodesByLevel.get(p.LEVEL_ID), pt);
     if (!node) continue;
     const desc: string = p.DESCRIPTION ?? 'Entrance';
-    const aliases = new Set([desc.toLowerCase()]);
+    const label = entranceLabel(desc);
+    const aliases = new Set([desc.toLowerCase(), label.toLowerCase()]);
     if (/haupteingang/i.test(desc)) aliases.add('main entrance');
     if (/nord/i.test(desc)) aliases.add('north entrance');
     if (/süd/i.test(desc)) aliases.add('south entrance');
@@ -654,6 +836,7 @@ function buildPlaces(
     places.push({
       id: `pl_lm_${p.OBJECTID}`,
       name: desc,
+      label,
       kind: 'entrance',
       levelId: p.LEVEL_ID,
       verticalOrder: levelOrder.get(p.LEVEL_ID) ?? p.VERTICAL_ORDER ?? null,
@@ -664,21 +847,40 @@ function buildPlaces(
     report.places.entrances++;
   }
 
-  /* POIs: whitelisted use types, labelled in English. */
+  /* POIs: whitelisted use types, labelled in English. Their NAME is e.g. "WC Herren HG F", so the room is found
+     through UNIT_ID → unit NAME ("HG F 31.1"); the POI then shares the room's door node. */
+  const unitNameById = new Map<string, string>();
+  for (const u of input.units.features) if (u.properties.UNIT_ID && u.properties.NAME) unitNameById.set(u.properties.UNIT_ID, String(u.properties.NAME).trim());
+  const roomsByLevel = new Map<string, Place[]>();
+  for (const r of places) if (r.kind === 'room') (roomsByLevel.get(r.levelId) ?? roomsByLevel.set(r.levelId, []).get(r.levelId)!).push(r);
   for (const f of input.pois.features) {
     const p = f.properties;
     const meta = POI_TYPES[p.USE_TYPE];
     if (!meta || !f.geometry || !String(p.LEVEL_ID ?? '').startsWith(prefix)) continue;
+    const unitName = unitNameById.get(p.UNIT_ID) ?? '';
     const name: string = (p.NAME ?? '').trim();
-    const room = roomByName.get(name);
+    const room = roomByName.get(unitName) ?? roomByName.get(name);
     const pt = xy(f.geometry.coordinates);
     const node = room ? undefined : nearestNode(nodesByLevel.get(p.LEVEL_ID), pt);
     const nodeId = room?.nodeId ?? node?.id;
     if (!nodeId) continue;
     const levelName = String(p.LEVEL_ID).slice(prefix.length);
+    // Elevators etc. without a room of their own: name them after the nearest room ("Elevator near HG F 33"),
+    // so several on one floor can be told apart by voice.
+    let nearRoom: Place | undefined;
+    if (!room) {
+      let bestD = 15;
+      for (const r of roomsByLevel.get(p.LEVEL_ID) ?? []) {
+        const d = dist2D(xy([r.lon, r.lat]), pt);
+        if (d < bestD) {
+          bestD = d;
+          nearRoom = r;
+        }
+      }
+    }
     places.push({
       id: `pl_poi_${p.OBJECTID}`,
-      name: room ? `${meta.label} (${name})` : `${meta.label}, floor ${levelName}`,
+      name: room ? `${meta.label} (${room.name})` : nearRoom ? `${meta.label} near ${nearRoom.name}` : `${meta.label}, floor ${levelName}`,
       label: meta.label,
       kind: 'poi',
       levelId: p.LEVEL_ID,
@@ -686,7 +888,7 @@ function buildPlaces(
       ...lonLat(pt),
       nodeId,
       useType: p.USE_TYPE,
-      aliases: [...new Set([...meta.aliases, ...meta.aliases.map((a) => `${a} ${levelName.toLowerCase()}`), ...roomAliases(name)])],
+      aliases: [...new Set([...meta.aliases, ...meta.aliases.map((a) => `${a} ${levelName.toLowerCase()}`), ...(room ? roomAliases(room.name) : [])])],
     });
     report.places.pois++;
   }

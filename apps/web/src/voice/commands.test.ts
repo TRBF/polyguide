@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Intent } from '@polyguide/shared';
-import { answerForScreen, parseCommand } from './commands';
+import { answerForScreen, parseAppCommand, parseCommand } from './commands';
 
 const llm = (type: Intent['type'], target: string): Intent => ({ type, target, source: 'llm' });
 
@@ -39,5 +39,51 @@ describe('answerForScreen', () => {
     expect(answerForScreen('where', 'number 2', parseCommand('number 2'))).toMatchObject({ type: 'choose_option', option: 2 });
     expect(answerForScreen('where', 'hello there', null)).toBeNull();
     expect(answerForScreen('navigate', 'k30', null)).toBeNull();
+  });
+});
+
+describe('local fallback (works without the AI model)', () => {
+  const nav = (said: string) => parseCommand(said);
+  it('understands natural ways of asking for a place', () => {
+    expect(nav('Where is the Audimax?')).toMatchObject({ type: 'navigate_to', target: 'audimax' });
+    expect(nav('I want to go to F 30 please')).toMatchObject({ type: 'navigate_to', target: 'f 30' });
+    expect(nav('how do I get to the library')).toMatchObject({ type: 'navigate_to', target: 'library' });
+    expect(nav('find HG E 41')).toMatchObject({ type: 'navigate_to', target: 'hg e 41' });
+  });
+  it('maps needs to the nearest place', () => {
+    expect(nav('I need the toilet')).toMatchObject({ type: 'navigate_to', target: 'nearest toilet' });
+    expect(nav('bathroom')).toMatchObject({ type: 'navigate_to', target: 'nearest toilet' });
+    expect(nav('way out')).toMatchObject({ type: 'navigate_to', target: 'nearest exit' });
+    expect(nav('the nearest lift')).toMatchObject({ type: 'navigate_to', target: 'nearest elevator' });
+  });
+  it('still answers "where am I" as a question, not a destination', () => {
+    expect(nav('where am I')).toMatchObject({ type: 'where_am_i' });
+  });
+  it('accepts bare option numbers', () => {
+    expect(nav('two')).toMatchObject({ type: 'choose_option', option: 2 });
+    expect(nav('3')).toMatchObject({ type: 'choose_option', option: 3 });
+    expect(nav('the second one')).toMatchObject({ type: 'choose_option', option: 2 });
+    expect(nav('number 1')).toMatchObject({ type: 'choose_option', option: 1 });
+  });
+});
+
+describe('parseAppCommand', () => {
+  it('recognises emergencies', () => {
+    expect(parseAppCommand('Emergency!')).toEqual({ type: 'emergency' });
+    expect(parseAppCommand('call an ambulance')).toEqual({ type: 'emergency' });
+    expect(parseAppCommand('I fell')).toEqual({ type: 'emergency' });
+  });
+  it('recognises a broken elevator in many phrasings', () => {
+    for (const said of ['the elevator is not working', 'lift broken', 'elevator out of order', 'this elevator does not work', 'no elevator']) {
+      expect(parseAppCommand(said)).toEqual({ type: 'elevator_broken' });
+    }
+  });
+  it('does not treat ordinary commands as app commands', () => {
+    for (const said of ['next', 'take me to the elevator', 'help', 'where am i']) expect(parseAppCommand(said)).toBeNull();
+  });
+  it('yes / no / slower', () => {
+    expect(parseAppCommand('yes please')).toEqual({ type: 'yes' });
+    expect(parseAppCommand('no thanks')).toEqual({ type: 'no' });
+    expect(parseAppCommand('too fast')).toEqual({ type: 'repeat_slower' });
   });
 });

@@ -1,5 +1,7 @@
 import {
   API,
+  type AgentRequest,
+  type AgentResponse,
   type Intent,
   type IntentRequest,
   type Level,
@@ -175,6 +177,17 @@ export const api = {
       // fall through
     }
     return { ok: false, reason: 'model_error', message: 'The camera check is unavailable right now.' };
+  },
+
+  /** The voice agent. Never throws: a failure comes back as ok:false so the caller can fall back to local parsing. */
+  async agent(request: AgentRequest): Promise<AgentResponse> {
+    try {
+      const result = await postJsonLenient<AgentResponse>(API.agent, request);
+      if (result) return result;
+    } catch {
+      // fall through
+    }
+    return { ok: false, reason: 'model_error', message: 'The voice agent is unavailable.' };
   },
 
   async intent(request: IntentRequest): Promise<Intent> {

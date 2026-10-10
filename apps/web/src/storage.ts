@@ -1,4 +1,4 @@
-import type { Need, Profile } from '@polyguide/shared';
+import type { Need, Place, Profile } from '@polyguide/shared';
 
 export interface AppSettings {
   voiceFirst: boolean;
@@ -8,6 +8,12 @@ export interface AppSettings {
   stepLengthM: number;
   /** speechSynthesis voice name; null = pick the best voice for the language automatically. */
   voiceName: string | null;
+  /** Short vibration on each new instruction (Android; iOS has no web vibration). */
+  haptics: boolean;
+  /** Whole-interface zoom for low vision, independent of the low-vision route profile. */
+  textScale: 1 | 1.25 | 1.5;
+  /** Camera/motion/mic were granted once; the start tap re-requests them silently. */
+  permissionsGranted: boolean;
 }
 
 export interface Preferences {
@@ -26,6 +32,9 @@ export const defaultPreferences: Preferences = {
     beaconEnabled: true,
     stepLengthM: 0.7,
     voiceName: null,
+    haptics: true,
+    textScale: 1,
+    permissionsGranted: false,
   },
 };
 
@@ -62,6 +71,9 @@ export function loadPreferences(): Preferences {
         beaconEnabled: settingsData.beaconEnabled !== false,
         stepLengthM: Number.isFinite(stepLengthM) ? Math.min(1.5, Math.max(0.3, stepLengthM)) : 0.7,
         voiceName: typeof settingsData.voiceName === 'string' && settingsData.voiceName ? settingsData.voiceName : null,
+        haptics: settingsData.haptics !== false,
+        textScale: settingsData.textScale === 1.25 || settingsData.textScale === 1.5 ? settingsData.textScale : 1,
+        permissionsGranted: settingsData.permissionsGranted === true,
       },
     };
   } catch {
@@ -74,5 +86,57 @@ export function savePreferences(preferences: Preferences): void {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
   } catch {
     // Storage may be disabled or full. The app remains usable for this session.
+  }
+}
+
+/** True once the user has finished onboarding on this device (returning users skip the needs screen). */
+export function hasSavedPreferences(): boolean {
+  try {
+    return localStorage.getItem(STORAGE_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/* ───────── Recent places (spec §6.1 "recent destinations") ───────── */
+
+const RECENTS_KEY = 'polyguide.recents.v1';
+const MAX_RECENTS = 4;
+export type RecentKind = 'origin' | 'destination';
+type Recents = Record<RecentKind, Place[]>;
+
+function loadRecents(): Recents {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(RECENTS_KEY) ?? 'null');
+    if (isRecord(parsed)) {
+      const list = (v: unknown) => (Array.isArray(v) ? v.filter((p): p is Place => isRecord(p) && typeof p.id === 'string' && typeof p.name === 'string').slice(0, MAX_RECENTS) : []);
+      return { origin: list(parsed.origin), destination: list(parsed.destination) };
+    }
+  } catch {
+    // ignore
+  }
+  return { origin: [], destination: [] };
+}
+
+export function recentPlaces(kind: RecentKind): Place[] {
+  return loadRecents()[kind];
+}
+
+export function rememberPlace(kind: RecentKind, place: Place): void {
+  if (place.id.startsWith('node:')) return; // ad-hoc points (GPS, reroutes) are not places worth recalling
+  try {
+    const all = loadRecents();
+    all[kind] = [place, ...all[kind].filter((p) => p.id !== place.id)].slice(0, MAX_RECENTS);
+    localStorage.setItem(RECENTS_KEY, JSON.stringify(all));
+  } catch {
+    // Storage may be unavailable; recents are a convenience only.
+  }
+}
+
+export function clearRecents(): void {
+  try {
+    localStorage.removeItem(RECENTS_KEY);
+  } catch {
+    // ignore
   }
 }

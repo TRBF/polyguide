@@ -27,6 +27,7 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
   const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [voiceError, setVoiceError] = useState('');
+  const [typing, setTyping] = useState(false);
   /** True while hands-free listening is on; it survives pauses for the app voice and browser timeouts. */
   const keepAlive = useRef(false);
   const resumeTimer = useRef<number | null>(null);
@@ -178,29 +179,28 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
   }
 
   return (
-    <section className={`voice-bar${voiceFirst ? ' voice-bar-first' : ''}`} aria-label="Voice and text commands">
+    <section className={`voice-bar${voiceFirst ? ' voice-bar-first' : ''}${listening ? ' is-listening' : ''}`} aria-label="Voice and text commands">
       <div className="voice-controls">
         {available && (
-          <button
-            className="button button-mic"
-            type="button"
-            onClick={toggleListening}
-            aria-pressed={listening}
-            aria-label={voiceFirst ? undefined : listening ? 'Stop listening' : continuous ? 'Start continuous listening' : 'Push to talk'}
-          >
+          <button className="button button-mic" type="button" onClick={toggleListening} aria-pressed={listening}>
             <MicIcon listening={listening} />
-            {voiceFirst && <span>{listening ? 'Stop listening' : 'Tap and speak'}</span>}
+            <span>{listening ? (continuous ? 'Listening… tap to pause' : 'Listening…') : 'Tap to speak'}</span>
           </button>
         )}
-        <form className="command-form" onSubmit={submitText}>
-          <label className="sr-only" htmlFor="voice-command">Type a command</label>
-          <input id="voice-command" name="command" type="text" autoComplete="off" placeholder={listening ? 'Listening…' : 'Say or type: take me to HG F 30'} />
-          <button className="button button-command" type="submit">Send</button>
-        </form>
+        {available && (
+          <button className="button button-keyboard" type="button" aria-expanded={typing} aria-controls="command-form" onClick={() => setTyping((open) => !open)}>
+            <span aria-hidden="true">⌨</span>
+            <span className="sr-only">Type instead</span>
+          </button>
+        )}
       </div>
-      {transcript && <p className="transcript" aria-live="polite">Heard “{transcript}”</p>}
+      {/* Typing is the fallback: always there when speech input is not, one tap away otherwise. */}
+      <form id="command-form" className="command-form" onSubmit={submitText} hidden={available && !typing}>
+        <label className="sr-only" htmlFor="voice-command">Type a command</label>
+        <input id="voice-command" name="command" type="text" autoComplete="off" placeholder="I'm in F 7, take me to F 30" />
+        <button className="button button-command" type="submit">Send</button>
+      </form>
       {voiceError && <p className="form-error" role="status">{voiceError}</p>}
-      {!available && voiceFirst && <p className="voice-help">Speech recognition is unavailable here. Type any command in the field.</p>}
     </section>
   );
 });

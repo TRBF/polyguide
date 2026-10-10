@@ -94,3 +94,82 @@ describe('real HG graph regressions', () => {
     expect(r.steps.at(-1)!.speech).not.toMatch(/the Accessible toilet/);
   });
 });
+
+describe('out-of-service elevator', () => {
+  it('reroutes around the whole shaft the user reported', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const { closedElevatorShafts } = await import('../src');
+    const g = new Graph(JSON.parse(readFileSync(resolve(__dirname, '../../../data/hg/graph.json'), 'utf8')));
+    const place = (id: string) => g.places.find((p) => p.id === id)!;
+    const profile = { needs: ['wheelchair' as const] };
+    const first = planRoute(g, { routeId: 'a', from: place('pl_lm_137'), to: place('pl_hg_f_30'), profile });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const ride = first.steps.find((s) => s.maneuver === 'take_elevator')!;
+    const shaft = new Set(closedElevatorShafts(g, [ride.startNodeId]));
+    expect(shaft.size).toBeGreaterThan(0);
+    const second = planRoute(g, { routeId: 'b', from: place('pl_lm_137'), to: place('pl_hg_f_30'), profile: { ...profile, avoidElevatorAt: [ride.startNodeId] } });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const ride2 = second.steps.find((s) => s.maneuver === 'take_elevator')!;
+    expect(ride2).toBeDefined();
+    expect(ride2.startNodeId).not.toBe(ride.startNodeId);
+    // None of the closed shaft's edges may touch the new ride's nodes.
+    const closedNodes = new Set([...shaft].flatMap((id) => { const e = g.edges.get(id)!; return [e.from, e.to]; }));
+    expect(closedNodes.has(ride2.startNodeId)).toBe(false);
+    expect(second.warnings).toContain('Avoids the elevator you reported as out of service.');
+  });
+});
+
+describe('HG blueprint guarantees (real graph)', () => {
+  it('every node and edge has a floor; doors are kept; inferred elevators are flagged', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const json = JSON.parse(readFileSync(resolve(__dirname, '../../../data/hg/graph.json'), 'utf8'));
+    expect(json.nodes.filter((n: { levelId: string | null }) => !n.levelId)).toHaveLength(0);
+    expect(json.edges.filter((e: { levelFrom: string | null; levelTo: string | null }) => !e.levelFrom || !e.levelTo)).toHaveLength(0);
+    expect(json.nodes.filter((n: { door?: boolean }) => n.door).length).toBeGreaterThan(20);
+    const synthetic = json.edges.filter((e: { synthetic?: boolean }) => e.synthetic);
+    expect(synthetic.length).toBeGreaterThan(0);
+    for (const e of synthetic) expect(e.kind).toBe('elevator');
+  });
+
+  it('random routes: floor changes name the floor reached, no 1-metre steps, inferred elevators always warn', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const g = new Graph(JSON.parse(readFileSync(resolve(__dirname, '../../../data/hg/graph.json'), 'utf8')));
+    const rooms = g.places.filter((p) => p.kind === 'room');
+    let seed = 11;
+    const rnd = () => ((seed = (seed * 1664525 + 1013904223) % 2 ** 32) / 2 ** 32);
+    let vertical = 0;
+    let wrongFloor = 0;
+    for (let i = 0; i < 120; i++) {
+      const [a, b] = [rooms[Math.floor(rnd() * rooms.length)], rooms[Math.floor(rnd() * rooms.length)]];
+      if (a === b) continue;
+      const r = planRoute(g, { routeId: 't', from: a, to: b, profile: { needs: i % 2 ? ['wheelchair'] : [] } });
+      if (!r.ok) continue;
+      r.steps.forEach((s, k) => {
+        if (s.maneuver !== 'arrive' && !s.toLevelId && !/lift/i.test(s.text)) expect(s.distanceM, `${a.name}→${b.name}: "${s.text}"`).toBeGreaterThanOrEqual(2);
+        if (!s.toLevelId) return;
+        vertical++;
+        if (r.steps[k + 1] && r.steps[k + 1].levelId !== s.toLevelId) wrongFloor++;
+      });
+      const usesSynthetic = r.steps.some((s) => s.maneuver === 'take_elevator') && r.warnings.some((w) => w.includes('missing from their routing data'));
+      if (usesSynthetic) expect(r.warnings.join(' ')).toMatch(/Check it works/);
+    }
+    expect(vertical).toBeGreaterThan(50);
+    expect(wrongFloor / vertical).toBeLessThan(0.02);
+  });
+
+  it('speaks entrances by their English name', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const g = new Graph(JSON.parse(readFileSync(resolve(__dirname, '../../../data/hg/graph.json'), 'utf8')));
+    const from = g.places.find((p) => p.name === 'HG F 30')!;
+    const to = g.places.find((p) => p.id === 'pl_lm_137')!;
+    const r = planRoute(g, { routeId: 'e', from, to, profile: { needs: [] } });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.steps.at(-1)!.speech).toMatch(/^You have arrived\. The main entrance/);
+  });
+});

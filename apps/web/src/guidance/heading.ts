@@ -9,6 +9,14 @@ export const normalize180 = (d: number) => {
 };
 export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
+/** navigator.vibrate, but only after the first tap: before that, browsers block it and log an error. */
+export function buzz(pattern: number | number[]): void {
+  if (typeof navigator === 'undefined' || !('vibrate' in navigator)) return;
+  const activation = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation;
+  if (activation && !activation.hasBeenActive) return;
+  try { navigator.vibrate(pattern); } catch { /* unsupported */ }
+}
+
 export function headingDelta(bearingDeg: number | null | undefined, headingDeg: number | null | undefined): number | null {
   if (bearingDeg == null || headingDeg == null) return null;
   return normalize180(bearingDeg - headingDeg);
@@ -104,7 +112,7 @@ export class AudioBeacon {
 
   setEnabled(on: boolean) {
     this.enabled = on;
-    if (!on && isAndroid()) navigator.vibrate(0);
+    if (!on && isAndroid()) buzz(0);
   }
 
   get isEnabled() {
@@ -170,8 +178,8 @@ export class AudioBeacon {
   /** Android only (iOS has no web vibration): short buzz when you line up, long buzz every ~3 s while off. */
   private haptic(onCourse: boolean) {
     if (!isAndroid()) return;
-    if (onCourse && this.lastOnCourse !== true) navigator.vibrate(40);
-    else if (!onCourse && (this.lastOnCourse !== false || this.ticks % 5 === 0) && Math.abs(this.delta ?? 0) > 45) navigator.vibrate(220);
+    if (onCourse && this.lastOnCourse !== true) buzz(40);
+    else if (!onCourse && (this.lastOnCourse !== false || this.ticks % 5 === 0) && Math.abs(this.delta ?? 0) > 45) buzz(220);
     this.lastOnCourse = onCourse;
   }
 
