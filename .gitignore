@@ -5,3 +5,6 @@ dist/
 !.env.example
 *.log
 .DS_Store
+
+# Speech clips generated for scripts/e2e/whisper-voice.js
+apps/web/public/__e2e/
