@@ -20,7 +20,7 @@ async function getJson(url: string): Promise<any> {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body: any = await res.json();
       if (body.error) throw new Error(JSON.stringify(body.error));
       return body;
     } catch (err) {
