@@ -9,9 +9,10 @@ async (page) => {
     window.__recs = [];
     class FakeRec {
       constructor() { this.running = false; window.__recs.push(this); }
-      start() { if (this.running) throw new Error('already started'); this.running = true; }
+      start() { if (this.running) throw new Error('already started'); this.running = true; this.startedAt = Date.now(); }
       stop() { this.running = false; setTimeout(() => this.onend && this.onend(), 0); }
-      abort() { const was = this.running; this.running = false; if (was) setTimeout(() => this.onend && this.onend(), 0); }
+      // Like Chrome: aborting a session that has barely started may never fire onend.
+      abort() { const was = this.running; this.running = false; if (was && Date.now() - this.startedAt > 300) setTimeout(() => this.onend && this.onend(), 0); }
     }
     window.SpeechRecognition = FakeRec;
     window.webkitSpeechRecognition = FakeRec;
@@ -26,7 +27,8 @@ async (page) => {
     const synth = {
       speaking: false,
       // Like Android Chrome: speech is silent while a recognizer holds the mic.
-      speak(u) { const muted = window.__listening(); window.__spoken.push((muted ? 'MUTED: ' : '') + u.text); if (muted) window.__muted = (window.__muted || 0) + 1; setTimeout(() => u.onend && u.onend(), 5); },
+      // Muted speech never reports its end.
+      speak(u) { const muted = window.__listening(); window.__spoken.push((muted ? 'MUTED: ' : '') + u.text); if (muted) window.__muted = (window.__muted || 0) + 1; else setTimeout(() => u.onend && u.onend(), 5); },
       cancel() {}, getVoices() { return []; },
     };
     Object.defineProperty(window, 'speechSynthesis', { value: synth, configurable: true });
