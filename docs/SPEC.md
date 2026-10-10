@@ -295,7 +295,7 @@ The client regex fast path handles: `next`, `back`/`previous`, `repeat`, `stop`,
 
 ### 6.3 Voice I/O
 - **TTS:** `speechSynthesis`, with a queue that has priorities. Instruction > vision utterance > heading phrase. Interrupt on new instruction.
-- **STT:** OpenAI Whisper via `POST /api/stt` when the server has a key (`OPENAI_STT_MODEL`, default `whisper-1`). The phone records the mic (`MediaRecorder`), detects the start and end of each command from the audio level and uploads only speech; the server drops Whisper's inventions on silence. Works on any browser that can record, including iOS Safari and Firefox.
+- **STT:** OpenAI speech to text via `POST /api/stt` when the server has a key (`OPENAI_STT_MODEL`, default `gpt-4o-mini-transcribe`). The phone records the mic (`MediaRecorder`), detects the start and end of each command from the audio level and uploads only speech; the server drops Whisper's inventions on silence. Works on any browser that can record, including iOS Safari and Firefox.
   - Fallback: `webkitSpeechRecognition` / `SpeechRecognition` when there is no key or no recording support; `localStorage['polyguide.stt'] = 'browser'` forces it. If neither exists, show a large text field and keep push-to-talk hidden.
   - Hands-free listening pauses while the app speaks (Android mutes speech while the mic is open, and it avoids hearing itself).
 

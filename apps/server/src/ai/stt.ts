@@ -13,7 +13,7 @@ const TIMEOUT_MS = 8000;
 const MAX_BYTES = 1024 * 1024;
 const MIN_BYTES = 1000;
 
-export const sttModel = () => process.env.OPENAI_STT_MODEL?.trim() || 'whisper-1';
+export const sttModel = () => process.env.OPENAI_STT_MODEL?.trim() || 'gpt-4o-mini-transcribe';
 
 /** Vocabulary hint: Whisper spells room codes and command words the way the app parses them. */
 const PROMPT = {

@@ -8,8 +8,8 @@ import type { RecognitionLike } from './stt';
 const TICK_MS = 50;
 /** This much sound above the noise floor starts a command… */
 const SPEECH_MS = 150;
-/** …and this much quiet after it ends one. */
-const SILENCE_MS = 900;
+/** …and this much quiet after it ends one (long enough that a pause mid-sentence does not split it). */
+const SILENCE_MS = 1400;
 const MAX_COMMAND_MS = 12_000;
 /** Push-to-talk gives up when nothing is said. */
 const NO_SPEECH_MS = 8000;
