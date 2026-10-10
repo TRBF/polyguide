@@ -1,4 +1,5 @@
-import { defineConfig } from 'vite';
+import { fileURLToPath } from 'node:url';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 
@@ -15,8 +16,17 @@ const allowedHosts = [
 ];
 
 // /api is proxied to the Hono server so the app runs on one origin.
+// The shared and routing packages live outside this root, and Vite does not reliably watch them: after a
+// merge it kept serving the old @polyguide/shared (API.realtimeSession was undefined on phones). Watch them.
+const watchWorkspacePackages: Plugin = {
+  name: 'watch-workspace-packages',
+  configureServer(server) {
+    server.watcher.add(fileURLToPath(new URL('../../packages', import.meta.url)));
+  },
+};
+
 export default defineConfig({
-  plugins: plainHttp ? [react()] : [react(), basicSsl()],
+  plugins: plainHttp ? [react(), watchWorkspacePackages] : [react(), basicSsl(), watchWorkspacePackages],
   server: {
     host: true,
     port: plainHttp ? 5174 : 5173,
