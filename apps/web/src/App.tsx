@@ -15,7 +15,7 @@ import { RouteMap } from './RouteMap';
 import { VoiceBar, type VoiceBarHandle } from './VoiceBar';
 import { configureSpeech, speak, stopSpeech } from './voice/tts';
 import { VoicePicker } from './voice/VoicePicker';
-import { parseCommand } from './voice/commands';
+import { answerForScreen, parseCommand } from './voice/commands';
 import { loadPreferences, savePreferences, type Preferences } from './storage';
 import { useGuidance } from './guidance';
 import { requestSensorPermissions } from './sensorPermissions';
@@ -76,6 +76,17 @@ function sameName(place: Place, query: string): boolean {
     const n = compact(name);
     return n === q || (n.startsWith('HG') && n.slice(2) === q);
   });
+}
+
+/** For a spoken room code ("k30"), only rooms whose code starts with it (HG K 30.1, HG K 30.5), not fuzzy look-alikes. */
+function narrowToCode(places: Place[], query: string): Place[] {
+  const q = compact(query);
+  if (!/\d/.test(q)) return places;
+  const byCode = places.filter((place) => [place.name, ...place.aliases].some((name) => {
+    const n = compact(name);
+    return n.startsWith(q) || n.startsWith(`HG${q}`);
+  }));
+  return byCode.length ? byCode : places;
 }
 
 /** A turn arrow for when no compass heading is available (the arrow then shows the maneuver, not the bearing). */
@@ -288,7 +299,7 @@ export function App() {
     setBusy(false);
     if (!found) return [];
     const matches = found;
-    const filtered = matches.filter((place) => place.kind === 'room' || place.kind === 'entrance' || place.kind === 'poi');
+    const filtered = narrowToCode(matches.filter((place) => place.kind === 'room' || place.kind === 'entrance' || place.kind === 'poi'), query);
     setOriginMatches(filtered.slice(0, 5));
     return filtered.slice(0, 5);
   }
@@ -318,7 +329,7 @@ export function App() {
     const found = await fetchPlaces(searchText, nearest || byType ? origin : null);
     setBusy(false);
     if (!found) return [];
-    const filtered = found.filter((place) => place.kind === 'room' || place.kind === 'poi');
+    const filtered = narrowToCode(found.filter((place) => place.kind === 'room' || place.kind === 'poi'), searchText);
     const shown = filtered.slice(0, 5);
     setDestinationMatches(shown);
     // A spoken room code that names a room exactly ("HG F 30", "F 30") needs no disambiguation.
@@ -604,9 +615,12 @@ export function App() {
       return;
     }
 
-    const parsed = parseCommand(transcript);
+    // Read the reply as an answer to this screen's question ("k30" on "Where are you?" is where the user is).
+    const parsed = answerForScreen(screen, transcript, parseCommand(transcript));
     const screenKey: IntentRequest['screen'] = screen === 'where' ? 'start' : screen === 'permissions' ? 'needs' : screen;
-    const intent: Intent = parsed ?? await api.intent({ utterance: transcript, screen: screenKey, language: profile.language });
+    const intent: Intent = parsed
+      ?? answerForScreen(screen, transcript, await api.intent({ utterance: transcript, screen: screenKey, language: profile.language }))
+      ?? { type: 'unknown', source: 'regex' };
     switch (intent.type) {
       case 'help':
         announce(`${screenHelp[screen]} ${voiceOnlyHint}`);
