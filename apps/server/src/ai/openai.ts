@@ -36,6 +36,13 @@ export function classifyError(err: unknown, aborted: boolean): { reason: AiFailu
   return { reason: 'model_error', message: err instanceof Error ? err.message : 'Model error.' };
 }
 
+/** Short diagnostic for logs: error class, HTTP status and network cause. Never request content. */
+export function describeError(err: unknown): string {
+  const e = err as { constructor?: { name?: string }; status?: number; message?: string; cause?: { code?: string; message?: string; cause?: { code?: string } } };
+  const cause = e?.cause?.code ?? e?.cause?.cause?.code ?? e?.cause?.message;
+  return [e?.constructor?.name, e?.status, e?.message?.slice(0, 160), cause && `cause=${cause}`].filter(Boolean).join(' ');
+}
+
 /** Run fn with an AbortSignal that fires after ms. */
 export async function withTimeout<T>(ms: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const ctl = new AbortController();

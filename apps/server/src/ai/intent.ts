@@ -5,7 +5,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Intent, IntentType } from '@polyguide/shared';
-import { classifyError, getOpenAI, reasoningEffort, textModel, withTimeout } from './openai';
+import { classifyError, describeError, getOpenAI, reasoningEffort, textModel, withTimeout } from './openai';
 
 const TIMEOUT_MS = 4000;
 
@@ -132,7 +132,7 @@ intentRoutes.post('/intent', async (c) => {
     else if (type === 'choose_option') intent.type = 'unknown';
     return c.json<Intent>(intent);
   } catch (err) {
-    console.warn(`intent failed: ${classifyError(err, aborted).reason}`);
+    console.warn(`intent failed: ${classifyError(err, aborted).reason} (${describeError(err)})`);
     return c.json<Intent>({ type: 'unknown', source: 'llm' });
   }
 });

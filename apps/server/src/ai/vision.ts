@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { VisionRequest, VisionResponse, VisionResult } from '@polyguide/shared';
 import { getGraph, isNearRoute, matchPlaces, normRoom, routeStore } from '../graphStore';
-import { classifyError, getOpenAI, reasoningEffort, visionModel, withTimeout } from './openai';
+import { classifyError, describeError, getOpenAI, reasoningEffort, visionModel, withTimeout } from './openai';
 import { VISION_JSON_SCHEMA, VISION_SYSTEM_PROMPT, buildVisionUserText, postProcessVision } from './visionPrompt';
 
 const TIMEOUT_MS = 6000;
@@ -141,7 +141,7 @@ visionRoutes.post('/vision/check', async (c) => {
     return c.json<VisionResponse>({ ok: true, ...result });
   } catch (err) {
     const { reason, message } = classifyError(err, aborted);
-    console.warn(`vision ${req.trigger} failed after ${Math.round(performance.now() - t0)} ms: ${reason}`);
+    console.warn(`vision ${req.trigger} failed after ${Math.round(performance.now() - t0)} ms: ${reason} (${describeError(err)})`);
     return c.json<VisionResponse>({ ok: false, reason, message });
   }
 });

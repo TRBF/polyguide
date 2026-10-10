@@ -240,16 +240,47 @@ export function App() {
     return filtered.slice(0, 5);
   }
 
+  /** Of several candidate places, the one with the quickest route for this profile (or null). */
+  async function quickestOf(candidates: Place[], from: Place): Promise<Place | null> {
+    const results = await Promise.all(candidates.map(async (place) => ({
+      place,
+      result: await api.route({ from: { type: 'place', placeId: from.id }, to: { type: 'place', placeId: place.id }, profile }),
+    })));
+    const reachable = results.filter((r) => r.result.ok) as { place: Place; result: Route }[];
+    reachable.sort((a, b) => a.result.totalDurationS - b.result.totalDurationS);
+    return reachable[0]?.place ?? null;
+  }
+
   async function findDestinations(query: string, byVoice = false): Promise<Place[]> {
+    // "nearest accessible toilet" → search "accessible toilet", then pick the quickest reachable one.
+    const nearest = query.trim().match(/^(?:the\s+)?(?:nearest|closest)\s+(.+)$/i);
+    let searchText = nearest ? nearest[1] : query;
+    // A wheelchair user asking for a toilet means one they can use.
+    if (profile.needs.includes('wheelchair') && /\b(toilet|toilets|bathroom|restroom|wc|loo)\b/i.test(searchText) && !/accessible|barrier/i.test(searchText)) {
+      searchText = 'accessible toilet';
+    }
     setBusy(true);
-    const found = await fetchPlaces(query);
+    const found = await fetchPlaces(searchText);
     setBusy(false);
     if (!found) return [];
     const filtered = found.filter((place) => place.kind === 'room' || place.kind === 'poi');
     const shown = filtered.slice(0, 5);
     setDestinationMatches(shown);
     // A spoken room code that names a room exactly ("HG F 30", "F 30") needs no disambiguation.
-    const exact = shown.find((place) => sameName(place, query));
+    const exact = shown.find((place) => sameName(place, searchText));
+    // Several places with the same name (toilets, elevators) can't be told apart by voice; choose by distance.
+    const indistinct = shown.length > 1 && new Set(shown.map(placeLabel)).size === 1;
+    if (filtered.length && origin && !exact && (nearest || indistinct)) {
+      setBusy(true);
+      const best = await quickestOf(filtered.slice(0, 8), origin);
+      setBusy(false);
+      if (best) {
+        await createRoute(best);
+        return shown;
+      }
+      announce(`I found ${searchText}, but none can be reached from ${origin.name} with your route settings.`);
+      return shown;
+    }
     if (!filtered.length) {
       announce(`I couldn't find ${query}. Try another room number or point of interest.`);
     } else if (byVoice && (shown.length === 1 || exact)) {

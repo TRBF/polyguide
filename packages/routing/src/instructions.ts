@@ -33,6 +33,10 @@ interface RawStep {
   lastBearing: number | null;
 }
 
+/** Level the leg starts / ends on, in the direction actually travelled (edges are stored one way only). */
+const legFromLevel = (l: { edge: GraphEdge; a: GraphNode }) => (l.edge.from === l.a.id ? l.edge.levelFrom : l.edge.levelTo) ?? l.a.levelId;
+const legToLevel = (l: { edge: GraphEdge; b: GraphNode }) => (l.edge.to === l.b.id ? l.edge.levelTo : l.edge.levelFrom) ?? l.b.levelId;
+
 const isVertical = (e: GraphEdge) => e.source === 'transition' && e.kind !== 'entrance' && e.levelFrom !== e.levelTo;
 
 export function classifyTurn(deltaDeg: number): Maneuver {
@@ -91,7 +95,7 @@ export function buildSteps({ graph, nodes, edges, model, to, now = new Date() }:
   const raw: RawStep[] = [];
   let cur: RawStep | undefined;
   for (const leg of legs) {
-    const level = leg.vertical ? leg.edge.levelFrom ?? leg.a.levelId ?? '' : leg.a.levelId ?? leg.b.levelId ?? cur?.levelId ?? '';
+    const level = leg.vertical ? legFromLevel(leg) ?? '' : leg.a.levelId ?? leg.b.levelId ?? cur?.levelId ?? '';
     const startNew =
       !cur ||
       cur.vertical !== leg.vertical ||
@@ -194,7 +198,7 @@ export function buildSteps({ graph, nodes, edges, model, to, now = new Date() }:
     const polyline: [number, number][] = [[first.a.lon, first.a.lat], ...s.legs.map((l) => [l.b.lon, l.b.lat] as [number, number])];
     const next = raw[i + 1];
     const prev = raw[i - 1];
-    const toLevelId = s.vertical ? last.edge.levelTo ?? last.b.levelId ?? undefined : undefined;
+    const toLevelId = s.vertical ? legToLevel(last) ?? undefined : undefined;
 
     /* Maneuver */
     let maneuver: Maneuver;
@@ -322,13 +326,15 @@ export function buildSteps({ graph, nodes, edges, model, to, now = new Date() }:
     side = Math.abs(rel) < 30 ? 'ahead' : rel > 0 ? 'right' : 'left';
   }
   const spokenName = to.kind === 'room' ? capitalize(speakRoom(to.name)) : to.name;
-  const label = to.label ? ` (${to.label})` : '';
+  // Skip the friendly label when the name already contains it ("Accessible toilet, floor D").
+  const extra = to.label && !to.name.toLowerCase().includes(to.label.toLowerCase()) ? to.label : '';
+  const label = extra ? ` (${extra})` : '';
   const sideText = side === 'ahead' ? 'ahead of you' : `on your ${side}`;
   steps.push({
     index: steps.length,
     maneuver: 'arrive',
     text: `Arrived: ${to.name}${label} is ${sideText}`,
-    speech: `You have arrived. ${spokenName}${to.label ? `, the ${to.label},` : ''} is ${sideText}.`,
+    speech: `You have arrived. ${spokenName}${extra ? `, the ${extra},` : ''} is ${sideText}.`,
     distanceM: 0,
     durationS: 0,
     bearingDeg: null,

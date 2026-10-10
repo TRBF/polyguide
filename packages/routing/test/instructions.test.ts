@@ -75,3 +75,22 @@ describe('planRoute', () => {
     expect(r).toMatchObject({ ok: false, reason: 'no_route' });
   });
 });
+
+describe('real HG graph regressions', () => {
+  it('names the floor actually reached when an elevator edge is travelled against its stored direction', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const g = new Graph(JSON.parse(readFileSync(resolve(__dirname, '../../../data/hg/graph.json'), 'utf8')));
+    const place = (id: string) => g.places.find((p) => p.id === id)!;
+    // Haupteingang HG E → accessible toilet on floor D: one elevator ride down, E → D.
+    const r = planRoute(g, { routeId: 't', from: place('pl_lm_137'), to: place('pl_poi_275607'), profile: { needs: ['wheelchair'] } });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const ride = r.steps.find((s) => s.maneuver === 'take_elevator')!;
+    expect(ride.levelId).toBe('ETH.HG.E');
+    expect(ride.toLevelId).toBe('ETH.HG.D');
+    expect(ride.text).toBe('Take the elevator down to floor D');
+    expect(r.levels).toEqual(['ETH.HG.E', 'ETH.HG.D']);
+    expect(r.steps.at(-1)!.speech).not.toMatch(/the Accessible toilet/);
+  });
+});
