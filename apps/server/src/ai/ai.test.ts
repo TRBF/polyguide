@@ -63,3 +63,18 @@ describe('regexIntent', () => {
     expect(regexIntent('nearest accessible toilet')).toBeNull();
   });
 });
+
+describe('hardening', () => {
+  it('does not treat chatter as a command', async () => {
+    const { regexIntent } = await import('./intent');
+    expect(regexIntent('stop by the office tomorrow')).toBeNull();
+    expect(regexIntent('back to the lecture notes')).toBeNull();
+    expect(regexIntent('stop')?.type).toBe('stop');
+    expect(regexIntent("I’m at HG E 41")?.type).toBe('set_location');
+  });
+  it('strips German safety claims', async () => {
+    const { sanitizeUtterance } = await import('./visionPrompt');
+    expect(sanitizeUtterance('Der Weg ist frei. Raum F 33 links.')).toBe('Raum F 33 links.');
+    expect(sanitizeUtterance('Der Gang ist sicher.')).toBe('');
+  });
+});

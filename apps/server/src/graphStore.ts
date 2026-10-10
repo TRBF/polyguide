@@ -109,7 +109,7 @@ export function matchPlaces(text: string, opts: { limit?: number; kind?: Place['
   const n = normRoom(text);
   const exact = placeByNorm.get(n) ?? placeByNorm.get(`${g.json.facility}${n}`);
   if (exact) push(exact, 0.95);
-  for (const r of fuse!.search(text, { limit: limit * 3 })) push(r.item, Math.max(0.05, Math.min(0.9, 1 - (r.score ?? 1))));
+  for (const r of fuse!.search(text, { limit: limit * 3 })) push(r.item, Math.max(0.05, Math.min(0.85, 1 - (r.score ?? 1))));
   return out.slice(0, limit);
 }
 

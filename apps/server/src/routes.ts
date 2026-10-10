@@ -109,8 +109,10 @@ apiRoutes.post('/localize', async (c) => {
   const { roomText, lat, lon, accuracyM, levelHint } = parsed.data;
 
   if (roomText?.trim()) {
-    const matches = matchPlaces(roomText, { limit: 4, levelId: levelHint });
-    const all = matches.length ? matches : matchPlaces(roomText, { limit: 4 });
+    // Text that looks like a room code ("F 33", "hg e41") must resolve to a room, never to a toilet or café.
+    const kind = /^[a-z]{0,3}\s*[a-z]{1,2}\s*\d/i.test(roomText.trim()) ? ('room' as const) : undefined;
+    const matches = matchPlaces(roomText, { limit: 4, levelId: levelHint, kind });
+    const all = matches.length ? matches : matchPlaces(roomText, { limit: 4, kind });
     const best = all[0];
     if (!best || best.confidence < 0.3) {
       return c.json<LocalizeResult>({ ok: false, reason: 'no_match', message: `No room matches "${roomText}".` });

@@ -38,6 +38,7 @@ const OFF_HEADING_COOLDOWN_MS = 10_000;
 const PERIODIC_MS = 4000;
 const PERIODIC_WITHIN_M = 20;
 const VISION_CLIENT_TIMEOUT_MS = 8000;
+const REROUTE_MIN_CONFIDENCE = 0.9;
 
 const floorOf = (levelId: string) => levelId.split('.').at(-1) ?? levelId;
 const speakDist = (m: number) => (m < 3 ? 'a few metres' : `about ${Math.max(5, Math.round(m / 5) * 5)} metres`);
@@ -392,6 +393,10 @@ export class GuidanceEngine {
     try {
       const loc = await postJson<LocalizeResult>(API.localize, { roomText: roomName, levelHint }, 5000);
       if (!loc.ok) throw new Error(`I read ${roomName} but could not find it on the map.`);
+      // One camera frame can misread a digit; only reroute from a sign matched as a room with high confidence.
+      if (loc.confidence < REROUTE_MIN_CONFIDENCE || (loc.place && loc.place.kind !== 'room')) {
+        throw new Error(`I may have read ${roomName}, but I am not sure. Say I am at, then the room, to reroute.`);
+      }
       const to = route.to.id.startsWith('node:') ? { type: 'node' as const, nodeId: route.to.nodeId } : { type: 'place' as const, placeId: route.to.id };
       const next = await postJson<RouteResult>(API.route, { from: { type: 'node', nodeId: loc.nodeId }, to, profile: this.profile }, 8000);
       if (!next.ok) throw new Error(next.message || 'No new route was found.');

@@ -92,13 +92,16 @@ export const VISION_JSON_SCHEMA = {
 /** Phrases that claim safety. The model is told not to use them; we strip them anyway. */
 const UNSAFE = /\b(clear|clears|safe|safely|unobstructed|obstacle[- ]free|no obstacles?|nothing (is )?(in|blocking) (the|your) (way|path)|free (path|way|of obstacles)|path is (open|free)|you can (walk|go) (freely|straight through))\b/i;
 
+/** German claims of safety (JS  is ASCII-only, so use Unicode lookarounds). */
+const UNSAFE_DE = /(?<![\p{L}])(frei(e[nrms]?)?|sicher(e[nrms]?)?|ungefährlich|gefahrlos|hindernisfrei|kein(e[nrms]?)? hindernisse?)(?![\p{L}])/iu;
+
 /** Drop any sentence that claims safety, then cap to maxWords. */
 export function sanitizeUtterance(text: string, maxWords = 15): string {
   const sentences = text
     .replace(/\s+/g, ' ')
     .trim()
     .split(/(?<=[.!?])\s+/)
-    .filter((s) => s && !UNSAFE.test(s));
+    .filter((s) => s && !UNSAFE.test(s) && !UNSAFE_DE.test(s));
   const words = sentences.join(' ').split(' ').filter(Boolean);
   if (words.length <= maxWords) return words.join(' ');
   return words.slice(0, maxWords).join(' ').replace(/[,;:]$/, '') + '.';

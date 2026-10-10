@@ -10,6 +10,8 @@ import { classifyError, getOpenAI, reasoningEffort, visionModel, withTimeout } f
 import { VISION_JSON_SCHEMA, VISION_SYSTEM_PROMPT, buildVisionUserText, postProcessVision } from './visionPrompt';
 
 const TIMEOUT_MS = 6000;
+/** Triggers that must read small sign text (confirming arrival, locating, answering). Periodic/off_heading stay cheap. */
+const HIGH_DETAIL = new Set(['localize', 'approaching_node', 'user_query']);
 /** ~3 MB of base64 is far above a 1024 px JPEG at q 0.6; anything bigger is a client bug. */
 const MAX_IMAGE_CHARS = 3_000_000;
 /** A sign must match a known room at least this well before it can flag off-route. */
@@ -113,8 +115,8 @@ visionRoutes.post('/vision/check', async (c) => {
                 {
                   type: 'input_image',
                   image_url: `data:image/jpeg;base64,${req.imageJpegBase64}`,
-                  // Small sign text needs the high-res tiles; routine checks stay cheap and fast.
-                  detail: req.trigger === 'localize' ? 'high' : 'low',
+                  // Room signs are small: any check that has to read one uses the high-res tiles.
+                  detail: HIGH_DETAIL.has(req.trigger) ? 'high' : 'low',
                 },
               ],
             },

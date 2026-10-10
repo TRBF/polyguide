@@ -14,24 +14,25 @@ const INTENT_TYPES = ['navigate_to', 'set_location', 'where_am_i', 'whats_ahead'
 const NUMBER_WORDS: Record<string, number> = { one: 1, first: 1, two: 2, second: 2, three: 3, third: 3, four: 4, fourth: 4, five: 5, fifth: 5 };
 
 const SIMPLE: [RegExp, IntentType][] = [
-  [/^(next|continue|done|ok(ay)? next|i'?m (there|done))\b/, 'next'],
-  [/^(go )?(back|previous)\b/, 'back'],
+  // Anchored: continuous listening hears chatter, so "stop by the office" must not stop navigation.
+  [/^(next|continue|done|ok(ay)? next|i['’]?m (there|done))( please)?$/, 'next'],
+  [/^(go )?(back|previous)( please)?$/, 'back'],
   [/^(repeat|say (that|it) again|again|pardon|what\??)$/, 'repeat'],
-  [/^(stop|cancel|end navigation|quit)\b/, 'stop'],
-  [/\b(where am i|i'?m lost)\b/, 'where_am_i'],
-  [/\b(what'?s|what is) (ahead|in front)|what (can|do) you see\b/, 'whats_ahead'],
-  [/^(help|what can i say)\b/, 'help'],
+  [/^(stop|cancel|end navigation|stop navigation|quit)( please)?$/, 'stop'],
+  [/^(please )?(where am i|i['’]?m lost)$/, 'where_am_i'],
+  [/^(what['’]?s|what is) (ahead|in front)( of me)?$|^what (can|do) you see$/, 'whats_ahead'],
+  [/^(help|what can i say)( please)?$/, 'help'],
 ];
 
 /** Deterministic parse of the obvious phrasings; null when the model is needed. */
 export function regexIntent(utterance: string): Intent | null {
   const raw = utterance.trim().replace(/[.!]+$/, '');
-  const u = raw.toLowerCase();
+  const u = raw.toLowerCase().replace(/[‘’]/g, "'").replace(/\?+$/, '');
   if (!u) return null;
   // Targets come from `raw` so "HG F 30" keeps its casing.
   const nav = raw.match(/^(?:navigate to|take me to|go to|bring me to|guide me to|directions to)\s+(?:the\s+)?(.+)$/i);
   if (nav) return { type: 'navigate_to', target: nav[1].trim(), source: 'regex' };
-  const at = raw.match(/^(?:i'?m at|i am at|i'?m in|i am in|i'?m next to|i am next to|i'?m by|i'?m near)\s+(?:the\s+)?(.+)$/i);
+  const at = raw.match(/^(?:i['’]?m at|i am at|i['’]?m in|i am in|i['’]?m next to|i am next to|i['’]?m by|i['’]?m near)\s+(?:the\s+)?(.+)$/i);
   if (at) return { type: 'set_location', target: at[1].trim(), source: 'regex' };
   const opt = u.match(/^(?:number|option|the)?\s*(\d|one|two|three|four|five|first|second|third|fourth|fifth)(?:\s+one)?$/);
   if (opt) return { type: 'choose_option', option: Number(opt[1]) || NUMBER_WORDS[opt[1]], source: 'regex' };
