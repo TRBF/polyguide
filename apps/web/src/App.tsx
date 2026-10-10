@@ -205,6 +205,8 @@ export function App() {
   const toolSink = useRef<string[] | null>(null);
   const positionCache = useRef<{ key: string; info: PositionInfo } | null>(null);
   const rtActive = rtStatus !== 'off' && rtStatus !== 'error';
+  const rtConnecting = useRef(false);
+  const rtFailedAt = useRef(0);
 
   const profile = useMemo(() => ({
     ...preferences.profile,
@@ -287,6 +289,8 @@ export function App() {
 
   /** Opens the realtime voice; on failure the browser recognizer and /api/agent take over. */
   async function connectRealtime(): Promise<boolean> {
+    if (rtConnecting.current) return false;
+    rtConnecting.current = true;
     rtRef.current?.close();
     const agent = new RealtimeAgent({
       language: profile.language === 'de' ? 'de' : 'en',
@@ -300,8 +304,9 @@ export function App() {
       onAssistantTranscript: (text) => setMessage(text),
       onError: (error) => {
         rtRef.current = null;
+        rtFailedAt.current = Date.now();
         voiceBarRef.current?.startContinuous();
-        announce(`${error} Switching to the basic voice.`);
+        announce(`${error} Switching to the basic voice. Tap the screen to try the conversational voice again.`);
       },
     });
     rtRef.current = agent;
@@ -311,11 +316,28 @@ export function App() {
       return true;
     } catch (error) {
       if (rtRef.current === agent) rtRef.current = null;
+      rtFailedAt.current = Date.now();
       console.warn('realtime voice unavailable', error);
       setRtStatus('error');
       voiceBarRef.current?.startContinuous();
       return false;
+    } finally {
+      rtConnecting.current = false;
     }
+  }
+
+  // The conversational voice runs whenever the app is started and it is switched on, from trip planning on,
+  // not only when it was opened by the Start tap (a reload, a hot update, or turning the setting on later).
+  useEffect(() => {
+    if (started && preferences.settings.realtimeVoice && rtStatus === 'off' && !rtRef.current) void connectRealtime();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [started, preferences.settings.realtimeVoice, rtStatus]);
+
+  /** After a failure, the next tap tries again (a tap also lets phones start the mic and audio). */
+  function retryRealtimeOnTap(): void {
+    if (!started || !preferences.settings.realtimeVoice || rtRef.current || rtConnecting.current) return;
+    if (Date.now() - rtFailedAt.current < 4000) return;
+    void connectRealtime();
   }
 
   useEffect(() => () => {
@@ -1546,7 +1568,10 @@ export function App() {
     <div
       className={`app-shell${voiceFirst ? ' app-voice-first' : ''}${profile.needs.includes('lowVision') ? ' app-low-vision' : ''}${screen === 'navigate' ? ' is-travelling' : ''}`}
       style={preferences.settings.textScale !== 1 ? { zoom: preferences.settings.textScale } : undefined}
-      onPointerDown={() => { if (started && !touched) setTouched(true); }}
+      onPointerDown={() => {
+        if (started && !touched) setTouched(true);
+        retryRealtimeOnTap();
+      }}
     >
       {!started && (
         <main className="start-screen">
