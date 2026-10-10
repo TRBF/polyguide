@@ -107,7 +107,10 @@ mockRoutes.post('/localize', async (c) => {
   return c.json<LocalizeResult>(mockLocalize);
 });
 
-mockRoutes.post('/vision/check', (c) => c.json<VisionResponse>({ ok: true, ...mockVisionResult }));
+/** Stand-ins for Track B's AI endpoints until apps/server/src/ai lands. */
+export const mockAiRoutes = new Hono();
+
+mockAiRoutes.post('/vision/check', (c) => c.json<VisionResponse>({ ok: true, ...mockVisionResult }));
 
 const INTENT_PATTERNS: [RegExp, Intent['type']][] = [
   [/^(next|continue)\b/i, 'next'],
@@ -119,7 +122,7 @@ const INTENT_PATTERNS: [RegExp, Intent['type']][] = [
   [/^help\b/i, 'help'],
 ];
 
-mockRoutes.post('/intent', async (c) => {
+mockAiRoutes.post('/intent', async (c) => {
   const body = (await c.req.json().catch(() => null)) as IntentRequest | null;
   const u = body?.utterance?.trim() ?? '';
   const nav = u.match(/^(?:navigate to|take me to|go to)\s+(.+)$/i);
@@ -133,3 +136,5 @@ mockRoutes.post('/intent', async (c) => {
 mockRoutes.get('/dev/compare', (c) =>
   c.json({ mock: true, from: c.req.query('from'), to: c.req.query('to'), mode: c.req.query('mode'), ours: null, eth: null }),
 );
+
+mockRoutes.route('/', mockAiRoutes);

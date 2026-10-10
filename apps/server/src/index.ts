@@ -1,7 +1,9 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { logger } from 'hono/logger';
-import { mockRoutes } from './mock';
+import { loadGraph } from './graphStore';
+import { mockAiRoutes, mockRoutes } from './mock';
+import { apiRoutes } from './routes';
 
 const PORT = Number(process.env.PORT ?? 8787);
 const USE_MOCK = process.env.USE_MOCK === '1';
@@ -12,10 +14,16 @@ app.use('*', logger());
 if (USE_MOCK) {
   app.route('/api', mockRoutes);
 } else {
-  // Real routes land here (graph store, routing, localize). Until then, fall back to fixtures.
-  // TODO(track-B): mount AI routes with app.route('/api', aiRoutes) from ./ai.
-  app.route('/api', mockRoutes);
+  loadGraph();
+  app.route('/api', apiRoutes);
+  // TODO(track-B): replace with app.route('/api', aiRoutes) from ./ai once it lands.
+  app.route('/api', mockAiRoutes);
 }
+
+app.onError((err, c) => {
+  console.error(err);
+  return c.json({ ok: false, reason: 'server_error', message: err.message }, 500);
+});
 
 serve({ fetch: app.fetch, port: PORT }, (info) => {
   console.log(`PolyGuide server on http://localhost:${info.port} (mock=${USE_MOCK})`);

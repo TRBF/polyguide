@@ -316,6 +316,7 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
     for (let e = before; e < edges.length; e++) pathwaySegs.push({ a: edges[e].from, b: edges[e].to, edgeIdx: e });
   }
 
+  let splitSeq = 0;
   /** Snap a transition endpoint onto the interior of a pathway segment, splitting it. */
   function snapToSegment(p: XYZ): number | undefined {
     let best: { seg: (typeof pathwaySegs)[number]; t: number; d: number } | undefined;
@@ -339,7 +340,7 @@ export function buildGraph(input: BuildInput): { graph: GraphJson; report: Build
     );
     // Split edge: shorten the original, append the second half.
     const e = edges[seg.edgeIdx];
-    const second: WorkEdge = { ...e, id: `${e.id}b`, from: mid, to: e.to, lengthM: e.lengthM * (1 - t) };
+    const second: WorkEdge = { ...e, id: `${e.id}s${splitSeq++}`, from: mid, to: e.to, lengthM: e.lengthM * (1 - t) };
     e.to = mid;
     e.lengthM *= t;
     edges.push(second);
@@ -677,7 +678,7 @@ function buildPlaces(
     const levelName = String(p.LEVEL_ID).slice(prefix.length);
     places.push({
       id: `pl_poi_${p.OBJECTID}`,
-      name: `${meta.label} (${name})`,
+      name: room ? `${meta.label} (${name})` : `${meta.label}, floor ${levelName}`,
       label: meta.label,
       kind: 'poi',
       levelId: p.LEVEL_ID,
