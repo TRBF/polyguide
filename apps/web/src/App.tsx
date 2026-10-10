@@ -6,12 +6,15 @@ import {
   type Place,
   type RouteResult,
   type VisionTrigger,
+  useTypeFromText,
+  useTypeLabel,
 } from '@polyguide/shared';
 import { api } from './api';
 import { captureRoomSignFrame, releaseScreenWakeLock, requestAppPermissions, requestScreenWakeLock } from './camera';
 import { RouteMap } from './RouteMap';
 import { VoiceBar, type VoiceBarHandle } from './VoiceBar';
 import { configureSpeech, speak, stopSpeech } from './voice/tts';
+import { VoicePicker } from './voice/VoicePicker';
 import { parseCommand } from './voice/commands';
 import { loadPreferences, savePreferences, type Preferences } from './storage';
 import { useGuidance } from './guidance';
@@ -138,6 +141,13 @@ export function App() {
     speak(text, priority);
   }, []);
 
+  // Status lines confirm an action; they fade so the screen returns to its content.
+  useEffect(() => {
+    if (!message) return;
+    const timer = window.setTimeout(() => setMessage(''), 6000);
+    return () => window.clearTimeout(timer);
+  }, [message]);
+
   const onGuidanceRouteChange = useCallback((nextRoute: Route) => setRoute(nextRoute), []);
   const guidance = useGuidance(route, profile, {
     onSpeak: onGuidanceSpeak,
@@ -148,7 +158,7 @@ export function App() {
 
   useEffect(() => {
     savePreferences(preferences);
-    configureSpeech({ enabled: preferences.settings.speakWithAppVoice, rate: preferences.settings.speechRate });
+    configureSpeech({ enabled: preferences.settings.speakWithAppVoice, rate: preferences.settings.speechRate, language: preferences.profile.language === 'de' ? 'de' : 'en', voiceName: preferences.settings.voiceName });
   }, [preferences]);
 
   useEffect(() => {
@@ -263,9 +273,9 @@ export function App() {
   }
 
   /** Server errors are announced, never replaced by stale or fake results. */
-  async function fetchPlaces(query: string): Promise<Place[] | null> {
+  async function fetchPlaces(query: string, near?: Place | null): Promise<Place[] | null> {
     try {
-      return await api.places(query);
+      return await api.places(query, undefined, near?.id);
     } catch {
       announce('The PolyGuide server is unavailable. Please try again.');
       return null;
@@ -303,7 +313,9 @@ export function App() {
       searchText = 'accessible toilet';
     }
     setBusy(true);
-    const found = await fetchPlaces(searchText);
+    // A room type ("seminar room") means the nearest one, like "nearest toilet".
+    const byType = Boolean(useTypeFromText(searchText));
+    const found = await fetchPlaces(searchText, nearest || byType ? origin : null);
     setBusy(false);
     if (!found) return [];
     const filtered = found.filter((place) => place.kind === 'room' || place.kind === 'poi');
@@ -313,7 +325,7 @@ export function App() {
     const exact = shown.find((place) => sameName(place, searchText));
     // Several places with the same name (toilets, elevators) can't be told apart by voice; choose by distance.
     const indistinct = shown.length > 1 && new Set(shown.map(placeLabel)).size === 1;
-    if (filtered.length && origin && !exact && (nearest || indistinct)) {
+    if (filtered.length && origin && !exact && (nearest || byType || indistinct)) {
       setBusy(true);
       const best = await quickestOf(filtered.slice(0, 8), origin);
       setBusy(false);
@@ -746,25 +758,29 @@ export function App() {
         </div>
       </header>}
 
-      <main id="top" className="main-content">
+      <main id="top" className={`main-content${started ? '' : ' start-screen'}`}>
         {!started && (
-          <>
-            {/* Fills the screen so a blind user can tap anywhere; everything after this is voice. */}
-            <button type="button" className="button button-primary start-gate" onClick={beginApp} autoFocus>
-              Tap anywhere to start PolyGuide. Then just speak.
+          // The whole screen starts the app, so a blind user can tap anywhere; everything after is voice.
+          // The button is the accessible control; its click bubbles up to this handler.
+          <section className="start-tap-area" onClick={beginApp}>
+            <span className="brand-mark brand-mark-large" aria-hidden="true">P</span>
+            <h1>PolyGuide</h1>
+            <p className="lead">Step-by-step directions inside the ETH main building, by voice or by touch. Tap anywhere to start, then just speak.</p>
+            <button type="button" className="button button-primary start-gate" autoFocus>
+              Start
             </button>
-            <p className="lead">PolyGuide helps you find your way inside ETH Zürich. It supplements your cane or guide dog and does not detect obstacles.</p>
-          </>
+            <p className="start-note">PolyGuide supplements your cane or guide dog. It does not detect obstacles.</p>
+          </section>
         )}
         {started && message && <p className="global-message" role="status" aria-live="polite">{message}</p>}
 
         {started && screen === 'needs' && (
           <section className="screen-panel" aria-labelledby="needs-title">
-            <h1 id="needs-title">A route that fits your needs</h1>
-            <p className="lead">Choose any combination. PolyGuide adjusts routes around the access needs you select.</p>
+            <h1 id="needs-title">What do you need?</h1>
+            <p className="lead">Choose any that apply. Routes adapt to them.</p>
             <div className="safety-notice" role="note">
               <span className="notice-icon" aria-hidden="true">!</span>
-              <p><strong>Safety notice</strong><br />{safetyNotice}</p>
+              <p>{safetyNotice}</p>
             </div>
             <fieldset className="needs-list">
               <legend>Route preferences</legend>
@@ -809,17 +825,16 @@ export function App() {
               <button className="button button-primary" type="button" onClick={() => void enableDevicePermissions()} disabled={permissionBusy}>
                 {permissionBusy ? 'Requesting permissions…' : 'Enable camera, motion and microphone'}
               </button>
-              <button className="button button-secondary" type="button" onClick={() => setScreen('where')}>Continue without permissions</button>
+              <button className="button button-secondary" type="button" onClick={() => setScreen('where')}>{permissionMessage ? 'Continue' : 'Not now'}</button>
             </div>
             {permissionMessage && <p className="form-note" role="status">{permissionMessage}</p>}
-            <div className="screen-actions"><button className="button button-secondary" type="button" onClick={() => setScreen('where')}>Continue</button></div>
           </section>
         )}
 
         {screen === 'where' && (
           <section className="screen-panel" aria-labelledby="where-title">
             <h1 id="where-title">Where are you?</h1>
-            <p className="lead">Search for your room, scan a room sign, or use GPS outdoors. Indoor GPS is not used.</p>
+            <p className="lead">Search your room, or scan the room sign next to you.</p>
             {origin && <p className="selection-card"><span className="selection-label">Starting point</span><strong>{placeLabel(origin)}</strong></p>}
             <form className="search-form" onSubmit={submitOrigin}>
               <label htmlFor="origin-search">Room or entrance</label>
@@ -851,7 +866,7 @@ export function App() {
         {screen === 'destination' && (
           <section className="screen-panel" aria-labelledby="destination-title">
             <h1 id="destination-title">Where to?</h1>
-            <p className="lead">Search rooms and points of interest in ETH Zürich’s HG building.</p>
+            <p className="lead">A room number, a name like Audimax, or a place like toilet.</p>
             {origin && <p className="route-endpoint"><span>From</span><strong>{origin.name}</strong></p>}
             {destination && <p className="selection-card"><span className="selection-label">Destination</span><strong>{placeLabel(destination)}</strong></p>}
             <form className="search-form" onSubmit={submitDestination}>
@@ -864,11 +879,11 @@ export function App() {
             {destinationMatches.length > 0 && (
               <div className="results-block" aria-label="Destination results">
                 <h2>{destinationMatches.length > 1 ? `Choose one of ${destinationMatches.length} matches` : 'Choose destination'}</h2>
-                <ul className="result-list">{destinationMatches.map((place, index) => <li key={place.id}><button className="result-button" type="button" onClick={() => void createRoute(place)}><span className="result-number">{index + 1}</span><span>{placeLabel(place)}{place.useType && <small>{place.useType}</small>}</span></button></li>)}</ul>
+                <ul className="result-list">{destinationMatches.map((place, index) => <li key={place.id}><button className="result-button" type="button" onClick={() => void createRoute(place)}><span className="result-number">{index + 1}</span><span>{placeLabel(place)}{place.useType && <small>{useTypeLabel(place.useType)}</small>}</span></button></li>)}</ul>
               </div>
             )}
             <div className="quick-destinations">
-              <h2>Popular in the demo</h2>
+              <h2>Suggestions</h2>
               <button className="quick-destination" type="button" onClick={() => { setDestinationQuery('HG F 30'); void findDestinations('HG F 30', true); }}>HG F 30 <span>Audimax</span></button>
               <button className="quick-destination" type="button" onClick={() => { setDestinationQuery('HG E 41'); void findDestinations('HG E 41', true); }}>HG E 41 <span>Seminar room</span></button>
             </div>
@@ -882,7 +897,7 @@ export function App() {
         {screen === 'preview' && route && (
           <section className="screen-panel screen-panel-wide" aria-labelledby="preview-title">
             <h1 id="preview-title">To {route.to.label ?? route.to.name}</h1>
-            <p className="lead">From {route.from.name}{route.to.label ? `, to room ${route.to.name}` : ''}.</p>
+            <p className="lead">{route.to.label ? `Room ${route.to.name}. ` : route.to.useType ? `${useTypeLabel(route.to.useType)}. ` : ''}From {route.from.name}.</p>
             <dl className="route-stats">
               <div><dt>Distance</dt><dd>{Math.round(route.totalDistanceM)} m</dd></div>
               <div><dt>Time</dt><dd>{Math.max(1, Math.round(route.totalDurationS / 60))} min</dd></div>
@@ -895,11 +910,15 @@ export function App() {
             <section className="floor-map-panel" aria-labelledby="floor-map-title">
               <div className="section-heading-row">
                 <h2 id="floor-map-title">Floor map</h2>
-                <label className="floor-picker">Show floor
-                  <select value={selectedLevel} onChange={(event) => setSelectedLevel(event.target.value)}>
-                    {route.levels.map((level) => <option value={level} key={level}>Floor {level.split('.').at(-1) ?? level}</option>)}
-                  </select>
-                </label>
+                {route.levels.length > 1 && (
+                  <div className="floor-tabs" role="group" aria-label="Show floor">
+                    {route.levels.map((level) => (
+                      <button key={level} type="button" className="floor-tab" aria-pressed={(selectedLevel || route.levels[0]) === level} onClick={() => setSelectedLevel(level)}>
+                        Floor {level.split('.').at(-1) ?? level}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <RouteMap route={route} levelId={selectedLevel || route.levels[0]} />
             </section>
@@ -921,7 +940,7 @@ export function App() {
           <section className="screen-panel navigate-panel" aria-labelledby="navigate-title">
             <div className="navigate-heading-row">
               <h1 id="navigate-title">To {route.to.label ?? route.to.name}</h1>
-              <p className="nav-progress">Step {Math.min(guidance.stepIndex + 1, route.steps.length)} of {route.steps.length}</p>
+              <p className="nav-progress">Step {Math.min(guidance.stepIndex + 1, route.steps.length)} of {route.steps.length}, {Math.round(guidance.remainingTotalM)} m to go</p>
             </div>
             <ol className="step-track" aria-hidden="true">
               {route.steps.map((step) => <li key={step.index} className={step.index < guidance.stepIndex ? 'done' : step.index === guidance.stepIndex ? 'current' : ''} />)}
@@ -937,11 +956,6 @@ export function App() {
                 )}
               </div>
             </div>
-            <progress aria-label="Current step progress" max={Math.max(1, guidance.currentStep?.distanceM ?? 1)} value={Math.max(0, (guidance.currentStep?.distanceM ?? 0) - guidance.remainingStepM)} />
-            <div className="progress-row">
-              <span>{Math.round(guidance.remainingTotalM)} m to destination</span>
-              <span>{guidance.compassReliable ? 'Arrow follows your phone’s direction' : 'No compass. Arrow shows the turn'}</span>
-            </div>
             {guidance.nextStep && <p className="next-instruction">Then: {guidance.nextStep.text}</p>}
             <div className="navigation-controls" aria-label="Navigation controls">
               <button className="button button-nav" type="button" onClick={() => guidance.repeat()}>Repeat</button>
@@ -949,35 +963,52 @@ export function App() {
               <button className="button button-nav" type="button" onClick={() => guidance.whereAmI()}>Where am I?</button>
               <button className="button button-nav button-stop" type="button" onClick={() => { guidance.stop(); releaseScreenWakeLock(); setScreen('preview'); }}>Stop</button>
             </div>
-            <div className="camera-card">
-              <div className="camera-preview" aria-hidden="true">
-                {cameraFramePreview ? <img src={cameraFramePreview} alt="" /> : <span>⌖</span>}
-                {(cameraBusy || guidance.visionBusy) && <span className="camera-checking">Checking…</span>}
+            {guidance.currentStep && (
+              <details className="nav-map" open={!preferences.settings.voiceFirst}>
+                <summary>Map of floor {guidance.currentStep.levelId.split('.').at(-1)}</summary>
+                <RouteMap route={route} levelId={guidance.currentStep.levelId} activeStepIndex={guidance.stepIndex} compact />
+              </details>
+            )}
+            {cameraGranted && (
+              <div className="camera-card">
+                {cameraFramePreview && <img className="camera-preview" src={cameraFramePreview} alt="" />}
+                <p aria-live="polite">{cameraBusy || guidance.visionBusy ? 'Camera is checking…' : guidanceVision || guidance.lastVision?.sceneSummary || cameraMessage || 'The camera checks near each turn.'}</p>
+                <button className="button button-secondary" type="button" onClick={() => void checkCamera('user_query')} disabled={cameraBusy}>{cameraBusy ? 'Checking…' : 'Check camera'}</button>
               </div>
-              <div><strong>Camera guidance</strong><p>{cameraBusy || guidance.visionBusy ? 'Checking…' : guidance.lastVision?.sceneSummary || cameraMessage || 'The camera checks automatically near each turn.'}</p>{guidanceVision && <p className="vision-summary">{guidanceVision}</p>}</div>
-              <button className="button button-secondary" type="button" onClick={() => void checkCamera('user_query')} disabled={cameraBusy || !cameraGranted}>{cameraBusy ? 'Checking…' : 'Check camera'}</button>
-            </div>
+            )}
             <div className="sr-only" aria-live="assertive" aria-atomic="true">{liveGuidanceAnnouncement}</div>
           </section>
         )}
 
-        {screen === 'arrived' && (
-          <section className="screen-panel arrival-panel" aria-labelledby="arrived-title">
-            <div className="arrival-mark" aria-hidden="true">✓</div>
-            <h1 id="arrived-title">You’ve arrived</h1>
-            <p className="lead">{destination?.name ?? route?.to.name ?? 'Your destination'}{(() => {
-              const side = route?.steps.at(-1)?.side;
-              return side === 'left' || side === 'right' ? ` is on your ${side}.` : side === 'ahead' ? ' is ahead of you.' : '.';
-            })()}</p>
-            <p>Keep your cane or guide dog with you. PolyGuide does not detect obstacles.</p>
-            <div className="screen-actions"><button className="button button-primary" type="button" onClick={startNewDestination}>Choose a new destination</button></div>
-          </section>
-        )}
+        {screen === 'arrived' && (() => {
+          const side = route?.steps.at(-1)?.side;
+          const target = destination ?? route?.to ?? null;
+          const where = side === 'left' ? 'on your left' : side === 'right' ? 'on your right' : 'ahead of you';
+          const backTo = route && 'id' in route.from ? route.from : null;
+          return (
+            <section className="screen-panel arrival-panel" aria-labelledby="arrived-title">
+              <div className="sign-panel arrival-sign">
+                <span className="sign-arrow" aria-hidden="true">{side === 'left' ? '←' : side === 'right' ? '→' : '↑'}</span>
+                <div className="sign-copy">
+                  <h1 id="arrived-title" className="current-instruction">You have arrived</h1>
+                  <p className="sign-distance">{target ? `${target.label ?? target.name} is ${where}.` : `Your destination is ${where}.`}</p>
+                </div>
+              </div>
+              {target?.label && <p className="lead">Room {target.name}{target.useType ? `, ${useTypeLabel(target.useType)?.toLowerCase()}` : ''}.</p>}
+              <p className="arrival-note">Keep your cane or guide dog with you. PolyGuide does not detect obstacles.</p>
+              <div className="arrival-actions">
+                <button className="button button-primary" type="button" onClick={startNewDestination}>Choose a new destination</button>
+                {backTo && <button className="button button-secondary" type="button" onClick={() => void createRoute(backTo, route!.to)}>Route back to {backTo.label ?? backTo.name}</button>}
+              </div>
+            </section>
+          );
+        })()}
 
         {screen === 'settings' && (
           <section className="screen-panel" aria-labelledby="settings-title">
             <h1 id="settings-title">Settings</h1>
             <p className="lead">These preferences are saved on this device.</p>
+            <VoicePicker value={preferences.settings.voiceName} onChange={(voiceName) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, voiceName } }))} />
             <label className="setting-control" htmlFor="speech-rate"><span><strong>Speech rate</strong><small>{preferences.settings.speechRate.toFixed(1)}×</small></span><input id="speech-rate" type="range" min="0.6" max="1.5" step="0.1" value={preferences.settings.speechRate} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, speechRate: Number(event.target.value) } }))} /></label>
             <label className="toggle-row"><input type="checkbox" checked={preferences.settings.speakWithAppVoice} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, speakWithAppVoice: event.target.checked } }))} /><span><strong>Speak with app voice</strong><small>Turn this off when your screen reader already reads the instruction.</small></span></label>
             <label className="toggle-row"><input type="checkbox" checked={preferences.settings.beaconEnabled} onChange={(event) => { const enabled = event.target.checked; updatePreferences((current) => ({ ...current, settings: { ...current.settings, beaconEnabled: enabled } })); guidance.setBeaconEnabled(enabled); }} /><span><strong>Audio direction beacon</strong><small>A stereo tick that moves toward the route direction and double-ticks when you face it.</small></span></label>
@@ -988,7 +1019,6 @@ export function App() {
       </main>
 
       <footer className="app-footer" hidden={!started}>
-        {screen !== 'needs' && screen !== 'settings' && <button type="button" className="button button-quiet footer-back" onClick={moveBack}>Back</button>}
         <VoiceBar
           ref={voiceBarRef}
           voiceFirst={preferences.settings.voiceFirst}

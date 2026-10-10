@@ -12,7 +12,13 @@ async function loadTts() {
 beforeEach(() => {
   vi.useFakeTimers();
   spoken = [];
-  const synth = { speaking: false, speak: (u: FakeUtterance) => spoken.push(u), cancel: () => undefined };
+  const synth = {
+    speaking: false,
+    speak: (u: FakeUtterance) => spoken.push(u),
+    cancel: () => undefined,
+    getVoices: () => [],
+    addEventListener: () => undefined,
+  };
   vi.stubGlobal('window', { speechSynthesis: synth, setTimeout, clearTimeout });
   vi.stubGlobal('SpeechSynthesisUtterance', function (this: FakeUtterance, text: string) {
     this.text = text; this.rate = 1; this.onend = null; this.onerror = null;

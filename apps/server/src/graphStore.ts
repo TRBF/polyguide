@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fuse from 'fuse.js';
-import type { GraphJson, GraphNode, NodeId, Overrides, Place, PlaceId, RouteId, RouteResult } from '@polyguide/shared';
+import { useTypeFromText, type GraphJson, type GraphNode, type NodeId, type Overrides, type Place, type PlaceId, type RouteId, type RouteResult } from '@polyguide/shared';
 import { Graph, dist2D, pointSegment, type ProfileOptions } from '@polyguide/routing';
 
 const DATA_DIR = process.env.DATA_DIR ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../data');
@@ -94,7 +94,7 @@ export interface PlaceMatch {
 }
 
 /** Ranked place matches for free text ("HG E 41", "e41", "audimax", "toilet"). */
-export function matchPlaces(text: string, opts: { limit?: number; kind?: Place['kind']; levelId?: string } = {}): PlaceMatch[] {
+export function matchPlaces(text: string, opts: { limit?: number; kind?: Place['kind']; levelId?: string; byType?: boolean } = {}): PlaceMatch[] {
   const g = getGraph();
   const limit = opts.limit ?? 10;
   const keep = (p: Place) => (!opts.kind || p.kind === opts.kind) && (!opts.levelId || p.levelId === opts.levelId);
@@ -109,13 +109,33 @@ export function matchPlaces(text: string, opts: { limit?: number; kind?: Place['
   const n = normRoom(text);
   const exact = placeByNorm.get(n) ?? placeByNorm.get(`${g.json.facility}${n}`);
   if (exact) push(exact, 0.95);
+  // "seminar room" / "lecture hall" / "Hörsaal": every place of that type (search only; the caller ranks by distance).
+  const type = opts.byType ? useTypeFromText(text) : undefined;
+  if (type) for (const p of g.places) if (p.useType === type) push(p, 0.8);
   for (const r of fuse!.search(text, { limit: limit * 3 })) push(r.item, Math.max(0.05, Math.min(0.85, 1 - (r.score ?? 1))));
   return out.slice(0, limit);
 }
 
-export function searchPlaces(q: string, limit = 10, kind?: Place['kind']): Place[] {
+/** Straight-line metres between two places, plus ~20 m per floor so other floors rank behind this one. */
+function roughDistance(a: Place, b: Place): number {
+  const g = getGraph();
+  const pa = g.xy(a);
+  const pb = g.xy(b);
+  return Math.hypot(pa.x - pb.x, pa.y - pb.y) + 20 * Math.abs((a.verticalOrder ?? 0) - (b.verticalOrder ?? 0));
+}
+
+export function searchPlaces(q: string, limit = 10, kind?: Place['kind'], nearPlaceId?: string): Place[] {
+  const near = nearPlaceId ? getPlace(nearPlaceId) : undefined;
+  if (near && q.trim()) {
+    // Rank every match by distance from the user, not by text score alone ("seminar room" near me).
+    return matchPlaces(q, { limit: 1000, kind, byType: true })
+      .map((m) => ({ place: m.place, d: roughDistance(near, m.place) - m.confidence * 30 }))
+      .sort((a, b) => a.d - b.d)
+      .slice(0, limit)
+      .map((x) => x.place);
+  }
   if (!q.trim()) return getGraph().places.filter((p) => !kind || p.kind === kind).slice(0, limit);
-  return matchPlaces(q, { limit, kind }).map((m) => m.place);
+  return matchPlaces(q, { limit, kind, byType: true }).map((m) => m.place);
 }
 
 /** Best place for a name as read from a sign or said by the user. */
@@ -194,7 +214,8 @@ export function isNearRoute(routeId: RouteId, placeId: PlaceId, radiusM = 10): b
 type Feature = { type: 'Feature'; geometry: any; properties: Record<string, unknown> };
 let mapByLevel: Map<string, Feature[]> | null = null;
 
-const round7 = (c: any): any => (typeof c[0] === 'number' ? [+c[0].toFixed(7), +c[1].toFixed(7)] : c.map(round7));
+/** 6 decimals ≈ 0.1 m: plenty for drawing, and much smaller JSON. */
+const round7 = (c: any): any => (typeof c[0] === 'number' ? [+c[0].toFixed(6), +c[1].toFixed(6)] : c.map(round7));
 
 /** Room polygons + pathways per level for drawing (SPEC §7 /api/map/:levelId). Built lazily from the snapshot. */
 export function getMapLayer(levelId: string): { type: 'FeatureCollection'; features: Feature[] } {

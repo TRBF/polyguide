@@ -49,7 +49,7 @@ async (page) => {
   await page.waitForSelector('.start-gate'); await wait(1000);
   await page.mouse.click(400, 300); await wait(500);
   await page.getByRole('button', { name: 'Continue', exact: true }).click(); await wait(300);
-  await page.getByRole('button', { name: 'Continue without permissions' }).click(); await wait(300);
+  await page.getByRole('button', { name: 'Not now' }).click(); await wait(300);
   log.push(`touch user on ${await heading()}, button="${await mic().innerText()}"`);
   await push("i'm at hg e 41");
   await push('take me to hg f 30');
