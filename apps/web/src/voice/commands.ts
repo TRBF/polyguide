@@ -27,3 +27,33 @@ export function parseCommand(transcript: string): Intent | null {
   }
   return null;
 }
+
+const normalize = (transcript: string) => transcript.trim().toLowerCase().replace(/[‘’]/g, "'").replace(/[?!.,]+$/g, '');
+/** Said outright that they want to go somewhere ("take me to …"), whatever the screen asked. */
+const GOING = /^(?:please\s+)?(?:take me|navigate|go to|bring me|guide me|directions|route to|i want to go|i'd like to go|i need to (?:go|get)|how do i get)\b/;
+/** Said outright where they are ("I'm at …"). */
+const BEING = /^(?:i am|i'm|im)\s+(?:at|in|near|by|next to|outside|inside|standing)\b/;
+/** A short reply naming a room, e.g. "k30", "HG E 41", "F 33.1". */
+const looksLikeRoom = (text: string) => /\d/.test(text) && text.split(/\s+/).length <= 4;
+/** A short reply the model could not place ("the audimax"): search it as a place rather than give up. */
+const shortReply = (text: string) => text.split(/\s+/).length <= 5;
+const placeText = (transcript: string) => transcript.trim().replace(/[?!.,]+$/g, '').replace(/^the\s+/i, '');
+
+/**
+ * Reads a reply as the answer to the question the screen asked. On "Where are you?" a bare place is where the
+ * user is, not where they want to go (and the reverse on "Where to?"). An explicit "take me to …" / "I'm at …"
+ * keeps its meaning. With no intent yet, a bare room code is answered directly (no server round trip).
+ */
+export function answerForScreen(screen: string, transcript: string, intent: Intent | null): Intent | null {
+  const text = normalize(transcript);
+  if (screen === 'where') {
+    if (intent?.type === 'navigate_to' && intent.target && !GOING.test(text)) return { ...intent, type: 'set_location' };
+    if ((!intent && looksLikeRoom(text)) || (intent?.type === 'unknown' && shortReply(text))) return { type: 'set_location', target: placeText(transcript), source: 'regex' };
+  }
+  if (screen === 'destination') {
+    const tool = intent?.target === 'scan sign' || intent?.target === 'use gps';
+    if (intent?.type === 'set_location' && intent.target && !tool && !BEING.test(text)) return { ...intent, type: 'navigate_to' };
+    if ((!intent && looksLikeRoom(text)) || (intent?.type === 'unknown' && shortReply(text))) return { type: 'navigate_to', target: placeText(transcript), source: 'regex' };
+  }
+  return intent;
+}

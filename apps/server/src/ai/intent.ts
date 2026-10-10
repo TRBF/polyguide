@@ -54,7 +54,10 @@ Intents:
 - choose_option: picks an item from a list read to them. option = the 1-based number.
 - unknown: anything else.
 Keep target in the user's words but drop filler ("please", "the"). Room codes look like "HG F 30"; write them in that form. The user may speak English or German.
+The screen is the question the app just asked. On screen "start" ("Where are you?") a bare place name is set_location; on screen "destination" ("Where to?") it is navigate_to. Only words like "take me to" or "I'm at" override that.
 Examples:
+Screen start, "k30" → set_location, target "HG K 30"
+Screen destination, "the Audimax" → navigate_to, target "Audimax"
 "nearest toilet" → navigate_to, target "nearest toilet"
 "where's the closest wheelchair accessible bathroom" → navigate_to, target "nearest accessible toilet"
 "I need to get to the Audimax please" → navigate_to, target "Audimax"

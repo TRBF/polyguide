@@ -119,6 +119,7 @@ p { margin: 0; }
 .split-actions .button { flex: 1 1 0; }
 .split-actions .button-secondary { flex: 0 1 32%; }
 .sticky-actions { position: sticky; z-index: 10; bottom: 80px; margin-bottom: calc(-1 * var(--sp-4)); padding-block: var(--sp-4); background: linear-gradient(to top, var(--ground) 80%, transparent); }
+.start-tap-area { cursor: pointer; }
 
 /* ───────── Start ───────── */
 .start-screen { display: flex; flex-direction: column; justify-content: center; min-height: 100vh; padding-block: var(--sp-7); }
@@ -281,6 +282,7 @@ p { margin: 0; }
 
 /* ───────── Voice bar ───────── */
 .app-footer { position: sticky; z-index: 20; bottom: 0; padding: var(--sp-3) var(--gutter) calc(var(--sp-3) + env(safe-area-inset-bottom)); border-top: 1px solid var(--rule); background: var(--paper); }
+.app-footer[hidden] { display: none; }
 .voice-bar { width: min(100%, var(--page)); margin: 0 auto; }
 .voice-controls { display: flex; gap: var(--sp-2); }
 .button-mic { width: var(--h-md); min-height: var(--h-md); flex: 0 0 auto; padding: 0; border-color: var(--sign); border-radius: 50%; background: var(--paper); color: var(--link); }

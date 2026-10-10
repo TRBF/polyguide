@@ -15,24 +15,52 @@ import { RouteMap } from './RouteMap';
 import { VoiceBar, type VoiceBarHandle } from './VoiceBar';
 import { configureSpeech, speak, stopSpeech } from './voice/tts';
 import { VoicePicker } from './voice/VoicePicker';
-import { parseCommand } from './voice/commands';
+import { answerForScreen, parseCommand } from './voice/commands';
 import { loadPreferences, savePreferences, type Preferences } from './storage';
 import { useGuidance } from './guidance';
+import { requestSensorPermissions } from './sensorPermissions';
 import './styles.css';
 
 type Route = Extract<RouteResult, { ok: true }>;
 type Screen = 'needs' | 'permissions' | 'where' | 'destination' | 'preview' | 'navigate' | 'arrived' | 'settings';
 const safetyNotice = 'This app supplements your cane or guide dog. It does not detect obstacles.';
 const entrySpeech: Record<Screen, string> = {
-  needs: `Welcome to PolyGuide. ${safetyNotice} Choose your access needs. Say help for options.`,
-  permissions: 'Device permissions. Enable camera, motion, microphone and screen wake, or continue using touch and typed commands.',
-  where: 'Where are you? Search for a room, scan a room sign, or use GPS outdoors. Say help for options.',
-  destination: 'Where to? Search for a room or point of interest. Say take me to and a room name, or say help.',
-  preview: 'Route preview. Review the route and steps, then say start or touch the Start button. Say help for options.',
+  needs: `Welcome to PolyGuide. ${safetyNotice} I am listening. If you are blind, say: I am blind. Then say next. Say help for options.`,
+  permissions: 'Device permissions. Say enable to allow camera, motion and microphone, or say next to skip.',
+  where: 'Where are you? Say I am at, and a room, for example: I am at H G E 41. Or say scan sign. Say help for options.',
+  destination: 'Where to? Say take me to, and a room, for example: take me to H G F 30, or the nearest toilet. Say help for options.',
+  preview: 'Say start to begin navigation, repeat to hear the route again, or back to choose another destination.',
   navigate: 'Navigation started. Say next, back, repeat, where am I, what is ahead, stop, or help.',
-  arrived: 'You have arrived. Say new destination or touch the button to continue.',
+  arrived: 'You have arrived. Say new destination, or take me to another room.',
   settings: 'Settings. Adjust speech, voice mode, beacon and step length. Say back to return.',
 };
+/** What a voice-only user can say on each screen ("help"). */
+const screenHelp: Record<Screen, string> = {
+  needs: 'Say I am blind, I use a wheelchair, turn on low vision, or turn on avoid stairs. Say turn off and the same name to undo. Say next to continue.',
+  permissions: 'Say enable to allow camera, motion and microphone. Say next to continue without them.',
+  where: 'Say I am at, and a room, for example: I am at H G E 41. Say scan sign to read a room sign with the camera, or use GPS outdoors. If I list options, say a number.',
+  destination: 'Say take me to, and a room or place, for example: take me to H G F 30, or take me to the nearest toilet. If I list options, say a number.',
+  preview: 'Say start to begin, repeat to hear the route again, or back to choose another destination.',
+  navigate: 'Say next when you have done a step, back for the previous step, repeat, where am I, what is ahead, or stop.',
+  arrived: 'Say new destination, or take me to, and a room.',
+  settings: 'Say faster, slower, turn on or turn off audio beacon, or back.',
+};
+const voiceOnlyHint = 'You can also say settings, faster, or slower at any time.';
+
+function routeSummary(route: Route): string {
+  const minutes = Math.max(1, Math.round(route.totalDurationS / 60));
+  return [`Route to ${route.to.name}: ${Math.round(route.totalDistanceM)} metres, about ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`, ...route.profileSummary.map((s) => `${s}.`), ...route.warnings].join(' ');
+}
+
+/** "I am blind", "wheelchair", … as a need, for the first screen. */
+function spokenNeed(command: string): Need | 'avoidStairs' | null {
+  const text = command.replace(/^(?:i am|i'm|i use|i need)\s+(?:a\s+)?/, '');
+  if (/^(blind|visually impaired)$/.test(text)) return 'blind';
+  if (/^(wheelchair|wheelchair user|in a wheelchair)$/.test(text)) return 'wheelchair';
+  if (/^(low vision|partially sighted)$/.test(text)) return 'lowVision';
+  if (/^(avoid stairs|no stairs)$/.test(text)) return 'avoidStairs';
+  return null;
+}
 
 function placeLabel(place: Place): string {
   return place.label ? `${place.name} — ${place.label}` : place.name;
@@ -48,6 +76,17 @@ function sameName(place: Place, query: string): boolean {
     const n = compact(name);
     return n === q || (n.startsWith('HG') && n.slice(2) === q);
   });
+}
+
+/** For a spoken room code ("k30"), only rooms whose code starts with it (HG K 30.1, HG K 30.5), not fuzzy look-alikes. */
+function narrowToCode(places: Place[], query: string): Place[] {
+  const q = compact(query);
+  if (!/\d/.test(q)) return places;
+  const byCode = places.filter((place) => [place.name, ...place.aliases].some((name) => {
+    const n = compact(name);
+    return n.startsWith(q) || n.startsWith(`HG${q}`);
+  }));
+  return byCode.length ? byCode : places;
 }
 
 /** A turn arrow for when no compass heading is available (the arrow then shows the maneuver, not the bearing). */
@@ -138,9 +177,7 @@ export function App() {
     if (!started || screen === 'needs') return;
     if (!preferences.settings.voiceFirst) return;
     if (screen === 'preview' && route) {
-      const minutes = Math.max(1, Math.round(route.totalDurationS / 60));
-      const summary = [`Route to ${route.to.name}: ${Math.round(route.totalDistanceM)} metres, about ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`, ...route.profileSummary.map((s) => `${s}.`), ...route.warnings].join(' ');
-      announce(`${summary} ${entrySpeech.preview}`, 'info');
+      announce(`${routeSummary(route)} ${entrySpeech.preview}`, 'info');
       return;
     }
     announce(entrySpeech[screen], 'info');
@@ -158,10 +195,23 @@ export function App() {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
+  /** The one tap a blind user makes: browsers allow speech, mic and iOS motion only after a gesture. */
   function beginApp(): void {
+    // iOS honours the motion prompt only while the gesture is fresh; a returning voice-first user gets no other tap.
+    if (preferences.settings.voiceFirst) void requestSensorPermissions().catch(() => undefined);
     setStarted(true);
+    // Mic first (inside the gesture), then the welcome: speaking pauses the mic until the welcome ends.
+    voiceBarRef.current?.startContinuous();
     speak(entrySpeech.needs, 'info');
   }
+
+  // Hands-free listening: always on the first screen (a blind user can't tap "Blind" first), and on every
+  // screen in voice-first mode. Touch users fall back to push-to-talk once they move on.
+  useEffect(() => {
+    if (!started) return;
+    if (preferences.settings.voiceFirst || screen === 'needs') voiceBarRef.current?.startContinuous();
+    else if (screen !== 'navigate') voiceBarRef.current?.stopContinuous();
+  }, [started, preferences.settings.voiceFirst, screen]);
 
   useEffect(() => {
     if (startAfterRoute && screen === 'navigate' && route) {
@@ -249,7 +299,7 @@ export function App() {
     setBusy(false);
     if (!found) return [];
     const matches = found;
-    const filtered = matches.filter((place) => place.kind === 'room' || place.kind === 'entrance' || place.kind === 'poi');
+    const filtered = narrowToCode(matches.filter((place) => place.kind === 'room' || place.kind === 'entrance' || place.kind === 'poi'), query);
     setOriginMatches(filtered.slice(0, 5));
     return filtered.slice(0, 5);
   }
@@ -279,7 +329,7 @@ export function App() {
     const found = await fetchPlaces(searchText, nearest || byType ? origin : null);
     setBusy(false);
     if (!found) return [];
-    const filtered = found.filter((place) => place.kind === 'room' || place.kind === 'poi');
+    const filtered = narrowToCode(found.filter((place) => place.kind === 'room' || place.kind === 'poi'), searchText);
     const shown = filtered.slice(0, 5);
     setDestinationMatches(shown);
     // A spoken room code that names a room exactly ("HG F 30", "F 30") needs no disambiguation.
@@ -503,6 +553,19 @@ export function App() {
       openSettings();
       return;
     }
+    const need = screen === 'needs' ? spokenNeed(normalizedCommand) : null;
+    if (need) {
+      if (need === 'avoidStairs') updatePreferences((current) => ({ ...current, profile: { ...current.profile, avoidStairs: true } }));
+      else setNeedState(need, true);
+      const name = need === 'avoidStairs' ? 'Avoid stairs' : need === 'lowVision' ? 'Low vision' : need === 'blind' ? 'Blind, with voice-first mode,' : 'Wheelchair';
+      announce(`${name} enabled. Add another need, or say next to continue.`);
+      return;
+    }
+    if (screen === 'permissions' && /^(enable|enable (them|all|permissions)|allow|yes|ok|okay|grant permissions)$/.test(normalizedCommand)) {
+      await enableDevicePermissions();
+      setScreen('where');
+      return;
+    }
     const toggle = normalizedCommand.match(/^(?:turn on|enable|activate|switch on|turn off|disable|deactivate|switch off)\s+(wheelchair|blind|low vision|avoid stairs|voice-first mode|voice first mode|speak with app voice|app voice|audio beacon|low stamina|avoid crowds)$/);
     if (toggle) {
       const turnOn = /^(turn on|enable|activate|switch on)/.test(normalizedCommand);
@@ -552,12 +615,15 @@ export function App() {
       return;
     }
 
-    const parsed = parseCommand(transcript);
+    // Read the reply as an answer to this screen's question ("k30" on "Where are you?" is where the user is).
+    const parsed = answerForScreen(screen, transcript, parseCommand(transcript));
     const screenKey: IntentRequest['screen'] = screen === 'where' ? 'start' : screen === 'permissions' ? 'needs' : screen;
-    const intent: Intent = parsed ?? await api.intent({ utterance: transcript, screen: screenKey, language: profile.language });
+    const intent: Intent = parsed
+      ?? answerForScreen(screen, transcript, await api.intent({ utterance: transcript, screen: screenKey, language: profile.language }))
+      ?? { type: 'unknown', source: 'regex' };
     switch (intent.type) {
       case 'help':
-        announce('You can say: next, back, repeat, stop, help, where am I, what is ahead, take me to a room, or I am at a room. You can also type the same commands.');
+        announce(`${screenHelp[screen]} ${voiceOnlyHint}`);
         return;
       case 'next':
         if (screen === 'needs') setScreen('permissions');
@@ -577,6 +643,7 @@ export function App() {
         return;
       case 'repeat':
         if (screen === 'navigate') guidance.repeat();
+        else if (screen === 'preview' && route) announce(`${routeSummary(route)} ${entrySpeech.preview}`);
         else announce(message || entrySpeech[screen]);
         return;
       case 'stop':
@@ -590,7 +657,7 @@ export function App() {
       case 'where_am_i':
         if (screen === 'navigate') {
           guidance.whereAmI();
-          if (!cameraGranted) announce('Enable camera access to check a room sign. You can also say scan sign.', 'vision');
+          if (!cameraGranted) announce('Camera access is off, so I cannot check a room sign. Say repeat to hear the current step.', 'vision');
         } else if (screen === 'where') announce(origin ? `Your starting point is ${origin.name}.` : 'Choose or scan a room to set your starting point.');
         else announce(origin ? `You started from ${origin.name}.` : 'Your starting point has not been selected.');
         return;
@@ -692,39 +759,36 @@ export function App() {
     );
   }
 
-  if (!started) {
-    return (
-      <div className="app-shell">
-        <main className="main-content start-screen">
-          <span className="brand-mark brand-mark-large" aria-hidden="true">P</span>
-          <h1>PolyGuide</h1>
-          <p className="lead">Step-by-step directions inside the ETH main building, by voice or by touch.</p>
-          <button type="button" className="button button-primary start-gate" onClick={beginApp} autoFocus>
-            Start
-          </button>
-          <p className="start-note">PolyGuide supplements your cane or guide dog. It does not detect obstacles.</p>
-        </main>
-      </div>
-    );
-  }
-
   return (
     <div className={`app-shell${preferences.settings.voiceFirst ? ' app-voice-first' : ''}${profile.needs.includes('lowVision') ? ' app-low-vision' : ''}`}>
-      <header className="app-header">
+      {started && <header className="app-header">
         <p className="brand">
           <span className="brand-mark" aria-hidden="true">P</span>
           <span><strong>PolyGuide</strong><small>ETH Zürich main building</small></span>
         </p>
         <div className="header-actions">
-          <button type="button" className="button button-quiet" onClick={() => announce('You can say next, back, repeat, stop, help, where am I, what is ahead, take me to a room, or I am at a room.')}>Help</button>
+          <button type="button" className="button button-quiet" onClick={() => announce(`${screenHelp[screen]} ${voiceOnlyHint}`)}>Help</button>
           <button type="button" className="button button-quiet" onClick={openSettings}>Settings</button>
         </div>
-      </header>
+      </header>}
 
-      <main id="top" className="main-content">
-        {message && <p className="global-message" role="status" aria-live="polite">{message}</p>}
+      <main id="top" className={`main-content${started ? '' : ' start-screen'}`}>
+        {!started && (
+          // The whole screen starts the app, so a blind user can tap anywhere; everything after is voice.
+          // The button is the accessible control; its click bubbles up to this handler.
+          <section className="start-tap-area" onClick={beginApp}>
+            <span className="brand-mark brand-mark-large" aria-hidden="true">P</span>
+            <h1>PolyGuide</h1>
+            <p className="lead">Step-by-step directions inside the ETH main building, by voice or by touch. Tap anywhere to start, then just speak.</p>
+            <button type="button" className="button button-primary start-gate" autoFocus>
+              Start
+            </button>
+            <p className="start-note">PolyGuide supplements your cane or guide dog. It does not detect obstacles.</p>
+          </section>
+        )}
+        {started && message && <p className="global-message" role="status" aria-live="polite">{message}</p>}
 
-        {screen === 'needs' && (
+        {started && screen === 'needs' && (
           <section className="screen-panel" aria-labelledby="needs-title">
             <h1 id="needs-title">What do you need?</h1>
             <p className="lead">Choose any that apply. Routes adapt to them.</p>
@@ -968,7 +1032,7 @@ export function App() {
         )}
       </main>
 
-      <footer className="app-footer">
+      <footer className="app-footer" hidden={!started}>
         <VoiceBar
           ref={voiceBarRef}
           voiceFirst={preferences.settings.voiceFirst}
