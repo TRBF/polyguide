@@ -41,6 +41,7 @@ const VISION_CLIENT_TIMEOUT_MS = 8000;
 const REROUTE_MIN_CONFIDENCE = 0.9;
 
 const floorOf = (levelId: string) => levelId.split('.').at(-1) ?? levelId;
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const speakDist = (m: number) => (m < 3 ? 'a few metres' : `about ${Math.max(5, Math.round(m / 5) * 5)} metres`);
 
 interface Snapshot {
@@ -163,7 +164,7 @@ export class GuidanceEngine {
     const where = `Step ${t.stepIndex + 1} of ${n}, on floor ${floorOf(currentStep.levelId)}.`;
     const rest = isVerticalStep(currentStep)
       ? ` ${currentStep.speech || currentStep.text}`
-      : ` ${speakDist(remainingStepM)} left on this part, ${speakDist(remainingTotalM)} to the destination.`;
+      : ` ${capitalize(speakDist(remainingStepM))} left on this part, ${speakDist(remainingTotalM)} to the destination.`;
     this.speak(where + rest, 'instruction');
     this.requestVision('user_query', 'Where am I? Read any room sign you can see.');
   };

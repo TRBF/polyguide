@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { regexIntent } from './intent';
-import { buildVisionUserText, postProcessVision, sanitizeUtterance } from './visionPrompt';
+import { buildVisionUserText, postProcessVision, sanitizeUtterance, splitRoomRanges } from './visionPrompt';
 
 describe('sanitizeUtterance', () => {
   it('drops sentences that claim safety', () => {
@@ -26,6 +26,15 @@ describe('postProcessVision', () => {
   });
   it('survives garbage', () => {
     expect(postProcessVision(null, 5)).toMatchObject({ utterance: '', confidence: 0, atExpectedPoint: false });
+  });
+});
+
+describe('splitRoomRanges', () => {
+  it('splits corridor range signs into room ids, keeping hyphenated-free names intact', () => {
+    expect(splitRoomRanges(['K 30.1 - KO 33'])).toEqual(['K 30.1', 'KO 33']);
+    expect(splitRoomRanges(['HG K30.1', 'K 30.1–K 33'])).toEqual(['HG K30.1', 'K 30.1', 'K 33']);
+    expect(splitRoomRanges(['HG F 33', 'HG F 33'])).toEqual(['HG F 33']);
+    expect(postProcessVision({ detectedRoomNames: ['K 30.1 - KO 33'], confidence: 0.8 }, 0).detectedRoomNames).toEqual(['K 30.1', 'KO 33']);
   });
 });
 

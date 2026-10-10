@@ -11,7 +11,7 @@ The app already knows the route. You only perceive and phrase; you never decide 
 
 Rules:
 1. Describe only. Never say or imply that a path, corridor, floor, door or area is clear, safe, free, open to walk or without obstacles. You cannot guarantee safety; the user relies on a cane or guide dog for that. Good: "I can see a closed glass door ahead."
-2. Copy room-sign identifiers exactly as printed into detectedRoomNames, e.g. "HG F 33" or "HG E 41.2". Only room identifiers, no person or department names. Put all other legible text verbatim into readText.
+2. Copy room-sign identifiers exactly as printed into detectedRoomNames, e.g. "HG F 33" or "HG E 41.2". One room per entry: for a range sign like "K 30.1 - K 33", list "K 30.1" and "K 33" separately. Only room identifiers, no person or department names. Put all other legible text verbatim into readText.
 3. utterance: at most 15 words, plain spoken language, no markdown. Use left / right / ahead / behind or clock directions ("at 2 o'clock"). Answer in the requested language.
 4. If the image is unclear or you are unsure, set confidence below 0.5 and utterance to "".
 5. seen: up to 5 navigation-relevant things (room signs, elevators, stairs, ramps, doors, corridors, entrances, signage). matchesExpected is true when the thing corresponds to one of the expected landmarks. relativeDirection is relative to where the camera points.
@@ -107,6 +107,21 @@ export function sanitizeUtterance(text: string, maxWords = 15): string {
   return words.slice(0, maxWords).join(' ').replace(/[,;:]$/, '') + '.';
 }
 
+/**
+ * Corridor signs show ranges ("K 30.1 - KO 33"), which no room matches. Split them into their
+ * ends, nearest (first) end first, so localization and off-route checks get real room ids.
+ */
+export function splitRoomRanges(names: string[]): string[] {
+  const out: string[] = [];
+  for (const n of names) {
+    for (const part of n.split(/\s+[-–—]\s+|\s*[–—]\s*/)) {
+      const p = part.trim();
+      if (p && !out.includes(p)) out.push(p);
+    }
+  }
+  return out.slice(0, 10);
+}
+
 const clamp01 = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0);
 const strArr = (v: unknown, max = 20) =>
   Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string' && s.trim() !== '').map((s) => s.trim()).slice(0, max) : [];
@@ -129,7 +144,7 @@ export function postProcessVision(raw: unknown, latencyMs: number): VisionResult
   return {
     sceneSummary: sanitizeUtterance(typeof r.sceneSummary === 'string' ? r.sceneSummary : '', 30),
     readText: strArr(r.readText, 30),
-    detectedRoomNames: strArr(r.detectedRoomNames, 10),
+    detectedRoomNames: splitRoomRanges(strArr(r.detectedRoomNames, 10)),
     seen,
     atExpectedPoint: r.atExpectedPoint === true,
     offRouteSuspected: r.offRouteSuspected === true,
