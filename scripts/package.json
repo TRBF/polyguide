@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "fetch:eth": "tsx fetch-eth.ts",
+    "build:graph": "tsx build-graph.ts",
     "typecheck": "tsc -p ."
   },
   "dependencies": {
