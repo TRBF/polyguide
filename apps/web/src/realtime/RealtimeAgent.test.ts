@@ -11,7 +11,7 @@ function agent() {
       .filter((e) => e.type === 'response.create' && e.response)
       .map((e) => ((e.response as { input: { content: { text: string }[] }[] }).input[0].content[0].text));
   const done = () => (a as unknown as { onEvent(e: unknown): void }).onEvent({ type: 'response.done', response: { status: 'completed', output: [], metadata: { kind: 'announce' } } });
-  return { a, spoken, done };
+  return { a, spoken, done, sent };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -41,6 +41,43 @@ describe('RealtimeAgent announcements', () => {
     a.announce('Then the elevator.');
     done();
     expect(spoken()).toEqual(['Starting.', 'Go 10 metres. Then the elevator.']);
+  });
+
+  it('an urgent instruction cuts off what is being said and replaces older queued ones', () => {
+    const { a, spoken, done, sent } = agent();
+    a.announce('Go 30 metres along the corridor.');
+    a.announce('Old instruction.');
+    a.announce('Turn left now.', { urgent: true });
+    expect(sent.some((e) => e.type === 'response.cancel')).toBe(true);
+    expect(sent.some((e) => e.type === 'output_audio_buffer.clear')).toBe(true);
+    // The cancelled response ends; only the new instruction follows.
+    (a as unknown as { onEvent(e: unknown): void }).onEvent({ type: 'response.done', response: { status: 'cancelled', output: [], metadata: { kind: 'announce' } } });
+    expect(spoken()).toEqual(['Go 30 metres along the corridor.', 'Turn left now.']);
+    done();
+  });
+
+  it('an urgent instruction also stops audio still playing after the model finished', () => {
+    const { a, sent } = agent();
+    const ev = (e: unknown) => (a as unknown as { onEvent(e: unknown): void }).onEvent(e);
+    ev({ type: 'output_audio_buffer.started' });
+    a.announce('Turn right now.', { urgent: true });
+    expect(sent.some((e) => e.type === 'output_audio_buffer.clear')).toBe(true);
+    expect(sent.some((e) => e.type === 'response.cancel')).toBe(false);
+  });
+
+  it('a nudge is not spoken over audio that is still playing', () => {
+    const { a, spoken } = agent();
+    (a as unknown as { onEvent(e: unknown): void }).onEvent({ type: 'output_audio_buffer.started' });
+    a.announce('Turn left', { droppable: true });
+    expect(spoken()).toEqual([]);
+  });
+
+  it('never cuts into a tool call in progress', () => {
+    const { a, sent } = agent();
+    (a as unknown as { toolsRunning: boolean; responseActive: boolean }).toolsRunning = true;
+    (a as unknown as { responseActive: boolean }).responseActive = true;
+    a.announce('Turn left now.', { urgent: true });
+    expect(sent.some((e) => e.type === 'response.cancel')).toBe(false);
   });
 
   it('drops a stale nudge rather than reading it late', () => {

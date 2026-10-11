@@ -282,7 +282,7 @@ export function App() {
   /** One voice: the realtime agent reads app announcements when it is connected, the browser voice otherwise. */
   const say = useCallback((text: string, priority: 'instruction' | 'vision' | 'heading' | 'info') => {
     if (toolSink.current) toolSink.current.push(text);
-    else if (rtRef.current?.connected) rtRef.current.announce(text, { droppable: priority === 'heading' });
+    else if (rtRef.current?.connected) rtRef.current.announce(text, { droppable: priority === 'heading', urgent: priority === 'instruction' });
     else speak(text, priority);
   }, []);
 

@@ -65,6 +65,10 @@ export class RealtimeAgent {
   private closed = false;
   private muted = false;
   private announcing: string | null = null;
+  /** The model's audio is still playing (it can outlast the response by seconds). */
+  private playing = false;
+  /** A tool call is being answered: the response slot must not be cut into. */
+  private toolsRunning = false;
   private frameIds: string[] = [];
   private partial = new Map<string, string>();
 
@@ -140,6 +144,8 @@ export class RealtimeAgent {
     for (const ev of ['pointerdown', 'touchend', 'keydown'] as const) window.removeEventListener(ev, this.unlockAudio);
     this.queue = [];
     this.responseActive = false;
+    this.playing = false;
+    this.toolsRunning = false;
     this.dc?.close();
     this.pc?.close();
     this.mic?.getTracks().forEach((t) => t.stop());
@@ -174,12 +180,25 @@ export class RealtimeAgent {
    * Speak an app announcement word for word (queued behind the current reply). A droppable one (heading nudge)
    * is spoken only if nothing else is being said or waiting; otherwise it is skipped, not queued.
    */
-  announce(text: string, opts: { droppable?: boolean } = {}) {
+  announce(text: string, opts: { droppable?: boolean; urgent?: boolean } = {}) {
     if (!this.connected || !text.trim()) return;
-    if (opts.droppable && (this.responseActive || this.queue.length)) return;
-    // A real instruction makes any waiting nudge obsolete.
-    if (!opts.droppable) this.queue = this.queue.filter((q) => !(q.kind === 'announce' && q.droppable));
+    if (opts.droppable && (this.responseActive || this.playing || this.queue.length)) return;
+    if (opts.urgent) {
+      // Something new happened (a new step): what was being said or waiting is out of date. Stop it and say this.
+      this.queue = this.queue.filter((q) => q.kind !== 'announce');
+      this.interrupt();
+    } else if (!opts.droppable) {
+      // A real instruction makes any waiting nudge obsolete.
+      this.queue = this.queue.filter((q) => !(q.kind === 'announce' && q.droppable));
+    }
     this.request({ kind: 'announce', text, droppable: opts.droppable, at: Date.now() });
+  }
+
+  /** Cut off the current speech, unless a tool call is being answered (that would lose its result). */
+  private interrupt() {
+    if (this.toolsRunning) return;
+    if (this.responseActive) this.send({ type: 'response.cancel' });
+    if (this.responseActive || this.playing) this.send({ type: 'output_audio_buffer.clear' });
   }
 
   /** Stop the model talking (e.g. the user tapped). */
@@ -304,10 +323,12 @@ export class RealtimeAgent {
         return;
       }
       case 'output_audio_buffer.started':
+        this.playing = true;
         this.setStatus('speaking');
         return;
       case 'output_audio_buffer.stopped':
       case 'output_audio_buffer.cleared':
+        this.playing = false;
         if (!this.responseActive) this.setStatus('listening');
         return;
       case 'response.output_audio_transcript.done': {
@@ -347,6 +368,7 @@ export class RealtimeAgent {
       return;
     }
     // Keep the slot while tools run, so nothing else starts a response in between.
+    this.toolsRunning = true;
     this.setStatus('thinking');
     const images: ToolResult['image'][] = [];
     for (const call of calls) {
@@ -356,7 +378,7 @@ export class RealtimeAgent {
       } catch (err) {
         result = { output: { ok: false, error: err instanceof Error ? err.message : 'The tool failed.' } };
       }
-      if (this.closed) return;
+      if (this.closed) return void (this.toolsRunning = false);
       this.send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(result.output) } });
       if (result.image) images.push(result.image);
     }
@@ -369,6 +391,7 @@ export class RealtimeAgent {
     // The tool output is new information: the model continues with a fresh live state. The slot stays held
     // until then, so a queued announcement cannot slip in between the tool result and the model's answer.
     await this.pushState();
+    this.toolsRunning = false;
     if (this.closed) return;
     this.responseActive = false;
     this.request({ kind: 'reply' });
