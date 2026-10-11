@@ -194,6 +194,10 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
     onCommand(command);
     setTranscript(command);
     form.reset();
+    // The phone keyboard can consume most of the viewport. Collapse the text fallback after
+    // sending so the trip confirmation and other next actions remain visible and tappable.
+    setTyping(false);
+    (form.elements.namedItem('command') as HTMLInputElement | null)?.blur();
   }
 
   return (
