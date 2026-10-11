@@ -28,6 +28,9 @@ export function RealtimeDock({ status, muted, voiceFirst, onToggleMute, onInterr
     const form = event.currentTarget;
     const text = String(new FormData(form).get('command') ?? '').trim();
     if (!text) return;
+    // Dismiss the phone keyboard before an AI response renders the confirmation buttons.
+    setTyping(false);
+    (form.elements.namedItem('command') as HTMLInputElement | null)?.blur();
     onText(text);
     form.reset();
   }

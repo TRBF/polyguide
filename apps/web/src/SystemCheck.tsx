@@ -102,6 +102,7 @@ export function SystemCheck({ cameraGranted, sensors, liveVoice, onClose, onSumm
       Promise.resolve().then(() => {
         if (liveVoice === 'error') set('live', 'warn', 'Not available: the regular voice and agent take over.');
         else if (liveVoice === 'off') set('live', 'warn', 'Off: the regular voice and agent are used.');
+        else if (liveVoice === 'connecting') set('live', 'warn', 'Still connecting. Typed commands remain available until voice setup finishes.');
         else set('live', 'ok', `Connected (${liveVoice})`);
       }),
 

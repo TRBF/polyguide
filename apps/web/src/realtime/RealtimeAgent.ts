@@ -51,6 +51,7 @@ interface FunctionCallItem {
 }
 
 const CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
+const CONNECT_TIMEOUT_MS = 15_000;
 
 export class RealtimeAgent {
   private pc: RTCPeerConnection | null = null;
@@ -71,6 +72,7 @@ export class RealtimeAgent {
   private toolsRunning = false;
   private frameIds: string[] = [];
   private partial = new Map<string, string>();
+  private connectAbort: AbortController | null = null;
 
   constructor(private opts: RealtimeAgentOptions) {}
 
@@ -85,19 +87,33 @@ export class RealtimeAgent {
   async connect(): Promise<void> {
     this.closed = false;
     this.setStatus('connecting');
+    const abort = new AbortController();
+    this.connectAbort = abort;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     // Inside the gesture: audio element first, so iOS lets it play later.
     const audio = document.createElement('audio');
     audio.autoplay = true;
     audio.setAttribute('playsinline', '');
     this.audio = audio;
-    const micPromise = navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-    const sessionPromise = fetch(API.realtimeSession, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ language: this.opts.language }) })
-      .then((r) => r.json() as Promise<RealtimeSessionResponse>);
-    try {
-      const [mic, session] = await Promise.all([micPromise, sessionPromise]);
+    // Save the stream as soon as permission resolves so a timeout can release it. getUserMedia itself cannot be
+    // aborted; if permission arrives after this connection was closed, stop the late stream immediately.
+    const micPromise = navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then((mic) => {
+      if (this.closed) {
+        mic.getTracks().forEach((track) => track.stop());
+        throw new Error('Voice setup was cancelled.');
+      }
       this.mic = mic;
+      return mic;
+    });
+    const sessionPromise = fetch(API.realtimeSession, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ language: this.opts.language }), signal: abort.signal })
+      .then((r) => r.json() as Promise<RealtimeSessionResponse>);
+    const setup = (async () => {
+      const [mic, session] = await Promise.all([micPromise, sessionPromise]);
+      if (this.closed) {
+        mic.getTracks().forEach((track) => track.stop());
+        throw new Error('Voice setup was cancelled.');
+      }
       if (!session.ok) throw new Error(session.message);
-      if (this.closed) throw new Error('closed');
 
       const pc = new RTCPeerConnection();
       this.pc = pc;
@@ -116,22 +132,36 @@ export class RealtimeAgent {
       dc.onmessage = (m) => this.onEvent(JSON.parse(String(m.data)));
       const opened = new Promise<void>((resolve, reject) => {
         dc.onopen = () => resolve();
-        dc.onclose = () => (this.closed ? undefined : this.fail('The voice connection closed.'));
-        setTimeout(() => reject(new Error('The voice connection timed out.')), 12_000);
+        dc.onclose = () => {
+          if (this.closed) return;
+          const error = new Error('The voice connection closed.');
+          reject(error);
+          this.fail(error.message);
+        };
       });
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      const res = await fetch(CALLS_URL, { method: 'POST', body: offer.sdp, headers: { Authorization: `Bearer ${session.clientSecret}`, 'Content-Type': 'application/sdp' } });
+      const res = await fetch(CALLS_URL, { method: 'POST', body: offer.sdp, headers: { Authorization: `Bearer ${session.clientSecret}`, 'Content-Type': 'application/sdp' }, signal: abort.signal });
       if (!res.ok) throw new Error(`Voice call refused (${res.status}).`);
       await pc.setRemoteDescription({ type: 'answer', sdp: await res.text() });
       await opened;
+    })();
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('Voice setup timed out. Check microphone access or use typed commands.')), CONNECT_TIMEOUT_MS);
+    });
+    try {
+      await Promise.race([setup, timeout]);
       this.setMuted(this.muted);
       this.setStatus('listening');
     } catch (err) {
+      abort.abort();
       this.close();
       this.setStatus('error');
       throw err;
+    } finally {
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      if (this.connectAbort === abort) this.connectAbort = null;
     }
   }
 
@@ -141,6 +171,8 @@ export class RealtimeAgent {
 
   close() {
     this.closed = true;
+    this.connectAbort?.abort();
+    this.connectAbort = null;
     for (const ev of ['pointerdown', 'touchend', 'keydown'] as const) window.removeEventListener(ev, this.unlockAudio);
     this.queue = [];
     this.responseActive = false;

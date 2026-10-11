@@ -60,8 +60,8 @@ function iosTap(): void {
   if (typeof document === 'undefined') return;
   if (!iosSwitch) {
     iosSwitch = document.createElement('label');
+    iosSwitch.className = 'ios-haptic-switch';
     iosSwitch.setAttribute('aria-hidden', 'true');
-    iosSwitch.style.cssText = 'position:fixed;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;left:-10px;top:-10px';
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.setAttribute('switch', '');

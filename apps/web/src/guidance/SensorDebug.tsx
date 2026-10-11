@@ -50,7 +50,7 @@ export function SensorDebug() {
   ];
 
   return (
-    <main className="app-shell" style={{ padding: 16, maxWidth: 560, margin: '0 auto' }}>
+    <main className="app-shell sensor-debug-page">
       <h1>Sensor debug</h1>
       <p>
         <button className="button button-primary" type="button" onClick={() => void enable()}>
@@ -58,14 +58,14 @@ export function SensorDebug() {
         </button>
       </p>
       {granted && <p role="status">Granted: {granted.length ? granted.join(', ') : 'nothing'}</p>}
-      <div aria-hidden="true" style={{ fontSize: 96, textAlign: 'center', transform: `rotate(${delta ?? 0}deg)`, transition: 'transform 120ms linear' }}>
-        ↑
-      </div>
-      <table style={{ width: '100%', fontSize: 18 }}>
+      <svg className="sensor-debug-arrow" viewBox="0 0 100 100" aria-hidden="true">
+        <text x="50" y="70" textAnchor="middle" transform={`rotate(${delta ?? 0} 50 50)`}>↑</text>
+      </svg>
+      <table className="sensor-debug-table">
         <tbody>
           {rows.map(([k, v]) => (
             <tr key={k}>
-              <th scope="row" style={{ textAlign: 'left', paddingRight: 12 }}>{k}</th>
+              <th scope="row">{k}</th>
               <td>{v}</td>
             </tr>
           ))}
@@ -74,10 +74,10 @@ export function SensorDebug() {
       <p>
         <label>
           Target bearing: {target}°
-          <input type="range" min={0} max={359} value={target} onChange={(e) => setTarget(Number(e.target.value))} style={{ width: '100%' }} />
+          <input className="sensor-debug-range" type="range" min={0} max={359} value={target} onChange={(e) => setTarget(Number(e.target.value))} />
         </label>
       </p>
-      <p style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <p className="sensor-debug-actions">
         <button className="button" type="button" onClick={() => setTarget(Math.round(snap?.headingDeg ?? 0))}>
           Set target to current heading
         </button>

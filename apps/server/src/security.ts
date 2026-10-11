@@ -17,7 +17,8 @@ export const securityHeaders = (): MiddlewareHandler => secureHeaders({
     fontSrc: ["'self'", 'https://fonts.gstatic.com'],
     imgSrc: ["'self'", 'data:', 'blob:'],
     mediaSrc: ["'self'", 'blob:', 'mediastream:'],
-    connectSrc: ["'self'"],
+    // The browser posts its SDP offer directly to this exact endpoint using a short-lived Realtime secret.
+    connectSrc: ["'self'", 'https://api.openai.com'],
     manifestSrc: ["'self'"],
     workerSrc: ["'self'"],
     objectSrc: ["'none'"],

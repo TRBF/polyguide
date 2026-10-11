@@ -210,14 +210,14 @@ export function RouteMap({ route, levelId, activeStepIndex, compact = false }: P
           <g className="map-route">
             {stepsHere.map((s) => (
               <g key={s.index} className={`map-leg map-leg-${stateOf(s)}`}>
-                <polyline className="map-route-outline" points={pts(s.polyline)} style={{ strokeWidth: 14 * u }} />
-                <polyline className="map-route-line" points={pts(s.polyline)} style={{ strokeWidth: (stateOf(s) === 'current' ? 9 : 7) * u }} />
+                <polyline className="map-route-outline" points={pts(s.polyline)} strokeWidth={14 * u} />
+                <polyline className="map-route-line" points={pts(s.polyline)} strokeWidth={(stateOf(s) === 'current' ? 9 : 7) * u} />
               </g>
             ))}
           </g>
           <g className="map-room-labels">
             {roomLabels.map((l) => (
-              <text key={l.id} className={l.destination ? 'map-room-label map-room-label-destination' : 'map-room-label'} x={l.at.x} y={l.at.y} style={{ fontSize: 13 * u, strokeWidth: 4 * u }}>
+              <text key={l.id} className={l.destination ? 'map-room-label map-room-label-destination' : 'map-room-label'} x={l.at.x} y={l.at.y} fontSize={13 * u} strokeWidth={4 * u}>
                 {l.text}
               </text>
             ))}
@@ -230,12 +230,12 @@ export function RouteMap({ route, levelId, activeStepIndex, compact = false }: P
               const lx = flip ? m.at.x - r - 8 * u - labelW : m.at.x + r + 8 * u;
               return (
                 <g key={i} className={`map-marker map-marker-${m.kind} map-marker-${m.state}`}>
-                  <circle cx={m.at.x} cy={m.at.y} r={r} style={{ strokeWidth: 3 * u }} />
-                  <text className="map-marker-glyph" x={m.at.x} y={m.at.y + (m.kind === 'turn' ? 5 : 6) * u} style={{ fontSize: (m.kind === 'turn' ? 14 : 18) * u }}>{m.glyph}</text>
+                  <circle cx={m.at.x} cy={m.at.y} r={r} strokeWidth={3 * u} />
+                  <text className="map-marker-glyph" x={m.at.x} y={m.at.y + (m.kind === 'turn' ? 5 : 6) * u} fontSize={(m.kind === 'turn' ? 14 : 18) * u}>{m.glyph}</text>
                   {m.label && (
                     <>
-                      <rect className="map-marker-label-bg" x={lx} y={m.at.y - 15 * u} width={labelW} height={30 * u} rx={8 * u} style={{ strokeWidth: 1.5 * u }} />
-                      <text className="map-marker-label" x={lx + 10 * u} y={m.at.y + 5.5 * u} style={{ fontSize: 16 * u }}>{m.label}</text>
+                      <rect className="map-marker-label-bg" x={lx} y={m.at.y - 15 * u} width={labelW} height={30 * u} rx={8 * u} strokeWidth={1.5 * u} />
+                      <text className="map-marker-label" x={lx + 10 * u} y={m.at.y + 5.5 * u} fontSize={16 * u}>{m.label}</text>
                     </>
                   )}
                 </g>

@@ -14,7 +14,35 @@ function agent() {
   return { a, spoken, done, sent };
 }
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe('RealtimeAgent connection fallback', () => {
+  it('times out a microphone prompt that never resolves and reports an error for fallback', async () => {
+    vi.useFakeTimers();
+    const onStatus = vi.fn();
+    const getUserMedia = vi.fn(() => new Promise<MediaStream>(() => {}));
+    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } });
+    vi.stubGlobal('document', { createElement: () => ({ autoplay: false, setAttribute: vi.fn(), srcObject: null }) });
+    vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      json: async () => ({ ok: true, clientSecret: 'ephemeral', model: 'test', expiresAt: 1 }),
+    }));
+    const a = new RealtimeAgent({ language: 'en', liveState: () => '[Live state]', runTool: async () => ({ output: {} }), onStatus });
+
+    const connecting = a.connect();
+    const rejection = expect(connecting).rejects.toThrow('Voice setup timed out');
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    await rejection;
+    expect(getUserMedia).toHaveBeenCalledOnce();
+    expect(a.connected).toBe(false);
+    expect(onStatus).toHaveBeenLastCalledWith('error');
+  });
+});
 
 describe('RealtimeAgent announcements', () => {
   it('speaks a heading nudge when the voice is idle', () => {

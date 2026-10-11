@@ -78,6 +78,8 @@ describe('securityHeaders', () => {
     app.get('/', (c) => c.text('ok'));
     const res = await app.request('/');
     expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+    expect(res.headers.get('content-security-policy')).toContain("connect-src 'self' https://api.openai.com");
+    expect(res.headers.get('content-security-policy')).not.toContain("'unsafe-inline'");
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(res.headers.get('x-frame-options')).toBe('SAMEORIGIN');
     expect(res.headers.get('permissions-policy')).toContain('camera=(self)');

@@ -191,13 +191,13 @@ export const VoiceBar = forwardRef<VoiceBarHandle, VoiceBarProps>(function Voice
     const data = new FormData(form);
     const command = String(data.get('command') ?? '').trim();
     if (!command) return;
+    // Do this before dispatching: on mobile the command may take several seconds to resolve,
+    // and the virtual keyboard must not cover its confirmation controls while it is pending.
+    setTyping(false);
+    (form.elements.namedItem('command') as HTMLInputElement | null)?.blur();
     onCommand(command);
     setTranscript(command);
     form.reset();
-    // The phone keyboard can consume most of the viewport. Collapse the text fallback after
-    // sending so the trip confirmation and other next actions remain visible and tappable.
-    setTyping(false);
-    (form.elements.namedItem('command') as HTMLInputElement | null)?.blur();
   }
 
   return (
