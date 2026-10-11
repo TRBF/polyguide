@@ -1,6 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import type { Intent } from '@polyguide/shared';
-import { answerForScreen, parseAppCommand, parseCommand } from './commands';
+import { answerForScreen, parseAppCommand, parseCommand, parseTripRequest } from './commands';
+
+describe('parseTripRequest', () => {
+  it.each([
+    ["I'm in F7 and I want to get to F30", { fromText: 'F7', toText: 'F30' }],
+    ['I am at the main entrance, take me to the Audimax', { fromText: 'the main entrance', toText: 'the Audimax' }],
+    ['I am near HG E 41; guide me to the library.', { fromText: 'HG E 41', toText: 'the library' }],
+    ["I'm outside entrance 2 and want to go to F 30", { fromText: 'entrance 2', toText: 'F 30' }],
+  ])('extracts both places from "%s"', (said, expected) => {
+    expect(parseTripRequest(said)).toEqual(expected);
+  });
+
+  it('does not mistake a one-place request or unrelated speech for a complete trip', () => {
+    expect(parseTripRequest('Take me to F30')).toBeNull();
+    expect(parseTripRequest('I am in F7')).toBeNull();
+    expect(parseTripRequest('I want to go from F7 to F30')).toBeNull();
+  });
+});
 
 const llm = (type: Intent['type'], target: string): Intent => ({ type, target, source: 'llm' });
 

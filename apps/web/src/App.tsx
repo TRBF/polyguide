@@ -19,11 +19,14 @@ import {
 import { api } from './api';
 import { captureRoomSignFrame, releaseScreenWakeLock, requestAppPermissions, requestScreenWakeLock } from './camera';
 import { SystemCheck } from './SystemCheck';
+import { TUTORIAL, Tutorial } from './Tutorial';
+import { ReflexMemory, matchReflex, type Reflex } from './voice/reflexes';
+import { earcon, unlockEarcons } from './voice/earcon';
 import { CameraBackdrop, CameraPeek, RouteSheet } from './views';
 import { VoiceBar, type VoiceBarHandle } from './VoiceBar';
 import { configureSpeech, isSpeaking, onSpeakingChange, speak, stopSpeech } from './voice/tts';
 import { VoicePicker } from './voice/VoicePicker';
-import { answerForScreen, parseAppCommand, parseCommand } from './voice/commands';
+import { answerForScreen, parseAppCommand, parseCommand, parseTripRequest } from './voice/commands';
 import { clearRecents, hasSavedPreferences, loadLastFix, loadPreferences, recentPlaces, rememberPlace, saveLastFix, savePreferences, type Preferences } from './storage';
 import { LOCATE_ON_ROUTE_M, useGuidance } from './guidance';
 import { PATTERN_LEGEND, buzz, stepPattern } from './guidance/haptics';
@@ -188,6 +191,13 @@ export function App() {
   const [avoidElevators, setAvoidElevators] = useState<string[]>([]);
   const [emergencyOpen, setEmergencyOpen] = useState(false);
   const [systemCheckOpen, setSystemCheckOpen] = useState(false);
+  const [typingFocus, setTypingFocus] = useState(false);
+  /** The "how it works" guide: card index while open, null when closed. */
+  const [tutorialIndex, setTutorialIndex] = useState<number | null>(null);
+  const tutorialRef = useRef<number | null>(null);
+  tutorialRef.current = tutorialIndex;
+  /** The card already spoken (the first one is part of the welcome), so it is not read twice. */
+  const tutorialSpoken = useRef<number | null>(null);
   /** Two misunderstandings in a row: offer help instead of repeating "I did not understand". */
   const misunderstood = useRef(0);
   /** What the user last said or typed, shown back so they can see what was understood. */
@@ -251,6 +261,124 @@ export function App() {
     return () => { cancelled = true; };
   }, [screen]);
 
+  // Read each card of the guide aloud as it appears (the first one may already be part of the welcome).
+  useEffect(() => {
+    if (tutorialIndex == null || tutorialSpoken.current === tutorialIndex) return;
+    tutorialSpoken.current = tutorialIndex;
+    const card = TUTORIAL[tutorialIndex];
+    const last = tutorialIndex === TUTORIAL.length - 1;
+    // Urgent: tapping Next quickly cuts off the previous step instead of queueing every card.
+    sayOut(`${card.spoken} ${last ? 'Say start to begin.' : 'Say next, back, or skip.'}`, true);
+    // The vibration step plays what it describes: left, then right.
+    if (card.id === 'haptics' && preferences.settings.haptics) {
+      const t1 = window.setTimeout(() => buzz(stepPattern('left')), 600);
+      const t2 = window.setTimeout(() => buzz(stepPattern('right')), 1800);
+      return () => { window.clearTimeout(t1); window.clearTimeout(t2); };
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tutorialIndex]);
+
+  /* ───── Reflexes: what must happen the instant it is said (voice/reflexes.ts) ───── */
+
+  const reflexMemory = useRef(new ReflexMemory());
+  const rtPrevStatus = useRef<string>('off');
+
+  /** Whether a reflex makes sense right now; otherwise the words go to the AI as usual. */
+  function reflexApplies(reflex: Reflex): boolean {
+    switch (reflex) {
+      case 'emergency':
+      case 'silence':
+        return true;
+      case 'stop':
+      case 'next':
+      case 'back':
+      case 'repeat':
+        return screen === 'navigate';
+      case 'yes':
+        return positionGate.holding || Boolean(pendingRef.current?.from && pendingRef.current?.to) || (Boolean(route) && screen === 'preview');
+      case 'no':
+        return positionGate.holding || Boolean(pendingRef.current);
+    }
+  }
+
+  async function runReflex(reflex: Reflex): Promise<void> {
+    switch (reflex) {
+      case 'emergency':
+        await runAppCommand('emergency');
+        return;
+      case 'silence':
+        stopSpeech();
+        setMessage('Quiet. Say “repeat” to hear the instruction again.');
+        return;
+      case 'stop':
+        guidance.stop();
+        releaseScreenWakeLock();
+        setScreen('preview');
+        return;
+      case 'next':
+      case 'back':
+      case 'repeat':
+        // Said in the seconds before guidance starts (it waits for "Starting…" to finish): start it now, then act.
+        if (guidance.phase === 'idle' && route) {
+          guidance.start();
+          setStartAfterRoute(false);
+          if (reflex === 'repeat') return; // starting already reads the first instruction
+        }
+        if (reflex === 'next') guidance.next();
+        else if (reflex === 'back') guidance.back();
+        else guidance.repeat();
+        return;
+      case 'yes':
+      case 'no':
+        await runAppCommand(reflex);
+    }
+  }
+
+  /**
+   * Every recognised sentence passes here first. A reflex runs locally at once; the AI's answer to the same
+   * words would come 1–2 s later and do it twice, so it is cancelled and told what already happened.
+   * Returns true when the words were handled.
+   */
+  function handleReflex(text: string, partial: boolean): boolean {
+    const reflex = matchReflex(text, partial);
+    if (!reflex || reflexMemory.current.recently(reflex) || !reflexApplies(reflex)) return false;
+    reflexMemory.current.mark(reflex);
+    const live = rtRef.current?.connected ? rtRef.current : null;
+    live?.cancelSpeech();
+    earcon('done');
+    void runReflex(reflex);
+    live?.note(`[App] The user said "${text}" and the app already did it instantly (${reflex}). Do not do it again; stay silent unless they ask for something else.`);
+    return true;
+  }
+  const reflexRef = useRef(handleReflex);
+  reflexRef.current = handleReflex;
+
+  // The AI is taking a while: a soft pulse every few seconds, so silence never feels like a crash.
+  useEffect(() => {
+    if (!thinking) return;
+    let pulses = 0;
+    const first = window.setTimeout(() => {
+      earcon('thinking');
+      pulses = 1;
+    }, 1500);
+    const again = window.setInterval(() => {
+      if (pulses > 0 && pulses < 3) {
+        earcon('thinking');
+        pulses += 1;
+      }
+    }, 2500);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(again);
+    };
+  }, [thinking]);
+
+  // On a small screen the trip area can run short: keep the newest words of the conversation in view.
+  useEffect(() => {
+    const trip = document.querySelector<HTMLElement>('main.trip');
+    if (trip && trip.scrollHeight > trip.clientHeight + 4) trip.scrollTo({ top: trip.scrollHeight, behavior: 'smooth' });
+  }, [heard, message]);
+
   const dispatchQueue = useRef<Promise<void>>(Promise.resolve());
   const latestDispatch = useRef<(text: string) => Promise<void>>(async () => undefined);
   /** Changes whenever navigation ends; async work started earlier checks it before acting. */
@@ -296,7 +424,6 @@ export function App() {
   const positionCache = useRef<{ key: string; info: PositionInfo } | null>(null);
   const rtActive = rtStatus !== 'off' && rtStatus !== 'error';
   const rtConnecting = useRef(false);
-  const rtFailedAt = useRef(0);
 
   const profile = useMemo(() => ({
     ...preferences.profile,
@@ -372,19 +499,29 @@ export function App() {
 
   /** The one tap a blind user makes: browsers allow speech, mic and iOS motion only after a gesture. */
   function beginApp(): void {
+    unlockEarcons(); // inside the tap: browsers only allow audio after a gesture
     // One tap does everything a browser only allows inside a gesture: mic, motion (iOS), camera, speech.
     void requestSensorPermissions().catch(() => undefined).then(() => sensors.start());
     setStarted(true);
     setScreen('where');
     const realtime = preferences.settings.realtimeVoice;
     if (!realtime) voiceBarRef.current?.startContinuous();
-    void enableDevicePermissions(true);
+    // First launch: one thing at a time. The guide needs only the mic; the camera is asked for when it ends.
+    if (preferences.settings.tutorialSeen) void enableDevicePermissions(true);
     const needs = describeNeeds(preferences);
     const text = returning
       ? `Welcome back${needs ? `. Using your needs: ${needs}` : ''}. ${ASK_TRIP}`
       : WELCOME;
     setMessage(returning ? text : ASK_TRIP);
-    const greeting = returning ? `${text} ${safetyNotice}` : text;
+    // First launch: the short guide replaces the welcome, and its first card is read as part of it.
+    const showGuide = !preferences.settings.tutorialSeen;
+    if (showGuide) {
+      tutorialSpoken.current = 0;
+      setTutorialIndex(0);
+    }
+    const greeting = showGuide
+      ? `Welcome to PolyGuide. Here is how it works, in ${TUTORIAL.length} short steps. ${TUTORIAL[0].spoken} Say next, or skip.`
+      : returning ? `${text} ${safetyNotice}` : text;
     if (!realtime) {
       speak(greeting, 'info');
       return;
@@ -406,20 +543,28 @@ export function App() {
       liveState: () => liveStateRef.current(),
       runTool: (name, args) => runToolRef.current(name, args),
       onStatus: (status) => {
+        // The user stopped talking and the AI starts working: a tick says "heard you" before any voice can.
+        if (status === 'thinking' && rtPrevStatus.current === 'hearing') earcon('heard');
+        rtPrevStatus.current = status;
         setRtStatus(status);
         setThinking(status === 'thinking');
       },
-      onUserTranscript: (text) => setHeard(text),
+      onUserTranscript: (text) => {
+        setHeard(text);
+        reflexRef.current(text, false);
+      },
       onAssistantTranscript: (text) => setMessage(text),
       // Captions follow the voice as it speaks, not only when the answer is finished.
-      onUserPartial: (text) => setHeard(text),
+      onUserPartial: (text) => {
+        setHeard(text);
+        reflexRef.current(text, true); // "emergency" or "be quiet" act even mid-sentence
+      },
       onAssistantPartial: (text) => setMessage(text),
       frame: () => turnFrameRef.current(),
       onError: (error) => {
         rtRef.current = null;
-        rtFailedAt.current = Date.now();
         voiceBarRef.current?.startContinuous();
-        announce(`${error} Switching to the basic voice. Tap the screen to try the conversational voice again.`);
+        announce(`${error} Switching to the basic voice. Use Retry conversational voice if you want to try again.`);
       },
     });
     rtRef.current = agent;
@@ -429,7 +574,6 @@ export function App() {
       return true;
     } catch (error) {
       if (rtRef.current === agent) rtRef.current = null;
-      rtFailedAt.current = Date.now();
       console.warn('realtime voice unavailable', error);
       setRtStatus('error');
       voiceBarRef.current?.startContinuous();
@@ -445,13 +589,6 @@ export function App() {
     if (started && preferences.settings.realtimeVoice && rtStatus === 'off' && !rtRef.current) void connectRealtime();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [started, preferences.settings.realtimeVoice, rtStatus]);
-
-  /** After a failure, the next tap tries again (a tap also lets phones start the mic and audio). */
-  function retryRealtimeOnTap(): void {
-    if (!started || !preferences.settings.realtimeVoice || rtRef.current || rtConnecting.current) return;
-    if (Date.now() - rtFailedAt.current < 4000) return;
-    void connectRealtime();
-  }
 
   useEffect(() => () => {
     rtRef.current?.close();
@@ -548,6 +685,28 @@ export function App() {
     releaseScreenWakeLock();
     if (guidanceAnnouncementTimer.current !== null) window.clearTimeout(guidanceAnnouncementTimer.current);
   }, []);
+
+  /** Speaks through whichever voice is live: the conversational voice when connected, else the app voice. */
+  function sayOut(text: string, urgent = false): void {
+    if (rtActive && rtRef.current) rtRef.current.announce(text, { urgent });
+    else speak(text, 'instruction');
+  }
+
+  /** Closes the guide for good (it can be reopened), and asks the one question the app needs. */
+  function finishTutorial(quiet = false): void {
+    // The second, calmer moment of a first launch: now the camera permission (the guide did not need it).
+    if (!cameraGranted) void enableDevicePermissions(true);
+    setTutorialIndex(null);
+    tutorialSpoken.current = null;
+    updatePreferences((current) => ({ ...current, settings: { ...current.settings, tutorialSeen: true } }));
+    setMessage(ASK_TRIP);
+    if (!quiet) sayOut(ASK_TRIP);
+  }
+
+  function openTutorial(): void {
+    tutorialSpoken.current = null;
+    setTutorialIndex(0);
+  }
 
   function updatePreferences(updater: (current: Preferences) => Preferences): void {
     setPreferences(updater);
@@ -718,6 +877,16 @@ export function App() {
   }
 
   async function chooseOrigin(place: Place): Promise<void> {
+    // A locally resolved destination may be waiting for the user to identify their starting point.
+    // Complete the proposal without committing it as the current location before confirmation.
+    const proposedTo = pendingRef.current?.to;
+    if (proposedTo && !pendingRef.current?.from) {
+      setPending({ from: place, to: proposedTo });
+      setAgentOptions(null);
+      setScreen('where');
+      announce(`From ${displayName(place)} to ${displayName(proposedTo)}. Is that right?`);
+      return;
+    }
     rememberPlace('origin', place);
     setOrigin(place);
     setFix({ place, source: 'user', at: Date.now() });
@@ -1052,6 +1221,11 @@ export function App() {
   }
 
   function moveBack(): void {
+    // Android Back on the guide closes it; it must not change the screen behind it.
+    if (tutorialRef.current != null) {
+      finishTutorial(true);
+      return;
+    }
     if (screen === 'settings') {
       setScreen(screenBeforeSettings);
       return;
@@ -1095,6 +1269,66 @@ export function App() {
     }
     if (/^(open )?settings$/.test(normalizedCommand)) {
       openSettings();
+      return;
+    }
+    const tripRequest = parseTripRequest(transcript);
+    if (tripRequest) {
+      setBusy(true);
+      const [fromFound, toFound] = await Promise.all([
+        fetchPlaces(tripRequest.fromText),
+        fetchPlaces(tripRequest.toText),
+      ]);
+      setBusy(false);
+      if (!fromFound || !toFound) return;
+
+      const routable = (places: Place[], query: string) => narrowToCode(
+        places.filter((place) => place.kind === 'room' || place.kind === 'entrance' || place.kind === 'poi'),
+        query,
+      );
+      const resolve = (places: Place[], query: string) => {
+        const exact = places.filter((place) => sameName(place, query));
+        if (exact.length === 1) return { place: exact[0], options: [] as Place[] };
+        if (exact.length > 1) return { place: undefined, options: exact.slice(0, MAX_OPTIONS) };
+        if (places.length === 1) return { place: places[0], options: [] as Place[] };
+        return { place: undefined, options: places.slice(0, MAX_OPTIONS) };
+      };
+      const fromChoices = resolve(routable(fromFound, tripRequest.fromText), tripRequest.fromText);
+      const toChoices = resolve(routable(toFound, tripRequest.toText), tripRequest.toText);
+      if (!fromChoices.place && !fromChoices.options.length) {
+        setScreen('where');
+        setOriginQuery(tripRequest.fromText);
+        announce(`I understood your starting point as ${tripRequest.fromText}, but could not find it. Try a room number or say scan sign.`);
+        return;
+      }
+      if (!toChoices.place && !toChoices.options.length) {
+        setScreen('where');
+        setDestinationQuery(tripRequest.toText);
+        announce(`I understood your destination as ${tripRequest.toText}, but could not find it. Try a room number or place name.`);
+        return;
+      }
+
+      const trip = {
+        ...(fromChoices.place ? { from: fromChoices.place } : {}),
+        ...(toChoices.place ? { to: toChoices.place } : {}),
+      };
+      setPending(trip);
+      // If both ends need clarification, resolve the destination first. Then the normal where-are-you path
+      // can fill the start and join it to this pending destination.
+      const unresolved = !fromChoices.place && !toChoices.place
+        ? { for: 'to' as const, places: toChoices.options }
+        : !fromChoices.place
+          ? { for: 'from' as const, places: fromChoices.options }
+          : !toChoices.place ? { for: 'to' as const, places: toChoices.options } : null;
+      setAgentOptions(unresolved);
+      if (screen === 'arrived') setScreen('where');
+      if (unresolved?.for === 'from') {
+        announce(`I understood you want to go to ${trip.to ? displayName(trip.to) : tripRequest.toText}. Where are you now? I found: ${listPlaceNames(unresolved.places)}. Say a number.`);
+      } else if (unresolved?.for === 'to') {
+        announce(`I understood you are at ${trip.from ? displayName(trip.from) : tripRequest.fromText}. Which destination? I found: ${listPlaceNames(unresolved.places)}. Say a number.`);
+      } else {
+        const question = `From ${displayName(fromChoices.place!)} to ${displayName(toChoices.place!)}. Is that right?`;
+        announce(screen === 'navigate' ? `${question} Say yes to switch, or no to keep going.` : question);
+      }
       return;
     }
     const need = screen === 'needs' ? spokenNeed(normalizedCommand) : null;
@@ -1271,6 +1505,11 @@ export function App() {
    * can arrive as two clips, and the second must see the trip the first one set up, not race it.
    */
   function dispatchCommand(transcript: string): Promise<void> {
+    // Reflexes first: no queue, no network.
+    if (handleReflex(transcript, false)) {
+      setHeard(transcript.trim());
+      return Promise.resolve();
+    }
     // An emergency, or stop/next while walking, never waits behind a slow agent request.
     const urgent = parseAppCommand(transcript)?.type === 'emergency'
       || /^(stop|cancel|next|repeat|back|help)[.!?]?$/i.test(transcript.trim());
@@ -1287,6 +1526,25 @@ export function App() {
     const said = transcript.trim();
     if (!said) return;
     setHeard(said);
+    // The guide is open: next / back / skip steer it; anything else closes it and is done right away.
+    if (tutorialRef.current != null) {
+      const i = tutorialRef.current;
+      const normalized = said.toLowerCase().replace(/[‘’]/g, "'").replace(/[?!.,]+$/g, '');
+      if (/^(?:next|continue|go on|okay|ok|yes|weiter)$/.test(normalized)) {
+        if (i < TUTORIAL.length - 1) setTutorialIndex(i + 1);
+        else finishTutorial();
+        return;
+      }
+      if (/^(?:back|previous|go back|zurück)$/.test(normalized)) {
+        setTutorialIndex(Math.max(0, i - 1));
+        return;
+      }
+      if (/^(?:skip|close|done|stop|start|let's start|begin|got it|überspringen)$/.test(normalized)) {
+        finishTutorial();
+        return;
+      }
+      finishTutorial(true);
+    }
     if (rtRef.current?.connected) {
       rtRef.current.sendText(said);
       return;
@@ -1536,6 +1794,9 @@ export function App() {
         announce('Running a system check.');
         setSystemCheckOpen(true);
         return;
+      case 'tutorial':
+        openTutorial();
+        return;
       case 'yes':
         // "Are you near HG F 41?" asked by the jump gate comes first: it is the most recent question.
         if (positionGate.holding && await confirmHeldFix()) return;
@@ -1777,6 +2038,7 @@ export function App() {
       needs: [...profile.needs, ...(profile.avoidStairs ? ['avoidStairs'] : [])],
       ...(vision?.sceneSummary ? { lastSeen: { summary: vision.sceneSummary, ageS: Math.round((now - lastVisionAt.current) / 1000) } } : {}),
       floorSensor: altimeter.describe(now),
+      ...(tutorialIndex != null ? { guide: `The how-it-works guide is open on card ${tutorialIndex + 1} of ${TUTORIAL.length}. If the user says next, back, skip or start, call the tutorial tool; anything else: just help them (the guide closes by itself).` } : {}),
     });
   }
 
@@ -1949,6 +2211,7 @@ export function App() {
       }
 
       case 'start_navigation': {
+        if (reflexMemory.current.recently('yes')) return { output: { ok: true, note: 'Already started by the app the moment the user said yes. Say nothing.' } };
         if (pending?.from && pending.to) {
           await confirmPending();
           return { output: { ok: true, note: 'Guidance started; the app reads the first instruction right after you. Say at most a few words.' } };
@@ -1962,6 +2225,10 @@ export function App() {
 
       case 'navigation': {
         const action = String(args.action);
+        // Already done by reflex the moment the user said it: never twice.
+        if (['next', 'back', 'repeat', 'stop'].includes(action) && reflexMemory.current.recently(action as Reflex)) {
+          return { output: { ok: true, note: 'The app already did this instantly. Say nothing about it.' } };
+        }
         if (screen !== 'navigate') return { output: { ok: false, error: 'Not navigating.' } };
         if (action === 'next') guidance.next();
         else if (action === 'back') guidance.back();
@@ -1998,6 +2265,24 @@ export function App() {
         return { output: { ok: true, say: preview.say } };
       }
 
+      case 'tutorial': {
+        const action = String(args.action ?? 'open');
+        const i = tutorialRef.current;
+        if (action === 'open' || i == null) {
+          tutorialSpoken.current = 0;
+          setTutorialIndex(0);
+          return { output: { ok: true, card: 1, of: TUTORIAL.length, say: `${TUTORIAL[0].spoken} Say next, or skip.` } };
+        }
+        if (action === 'skip' || (action === 'next' && i >= TUTORIAL.length - 1)) {
+          finishTutorial(true);
+          return { output: { ok: true, closed: true, say: ASK_TRIP } };
+        }
+        const next = action === 'back' ? Math.max(0, i - 1) : i + 1;
+        tutorialSpoken.current = next;
+        setTutorialIndex(next);
+        return { output: { ok: true, card: next + 1, of: TUTORIAL.length, say: `${TUTORIAL[next].spoken} ${next === TUTORIAL.length - 1 ? 'Say start to begin.' : 'Say next, back, or skip.'}` } };
+      }
+
       case 'start_over':
         startOver(false);
         return { output: { ok: true, start: fix?.place.name ?? null, note: 'Trip cleared; guidance stopped. Ask where they want to go.' } };
@@ -2007,7 +2292,8 @@ export function App() {
         return { output: { ok: true } };
 
       case 'emergency':
-        await runAppCommand('emergency');
+        // Opened by reflex the instant the user said it: just give the location for the model to read.
+        if (!reflexMemory.current.recently('emergency')) await runAppCommand('emergency');
         return { output: { ok: true, location: locationDescription() } };
 
       default:
@@ -2124,12 +2410,13 @@ export function App() {
 
   return (
     <div
-      className={`app-shell${voiceFirst ? ' app-voice-first' : ''}${profile.needs.includes('lowVision') ? ' app-low-vision' : ''}${screen === 'navigate' ? ' is-travelling' : ''}`}
-      style={preferences.settings.textScale !== 1 ? { zoom: preferences.settings.textScale } : undefined}
+      className={`app-shell${typingFocus ? ' is-typing' : ''}${voiceFirst ? ' app-voice-first' : ''}${profile.needs.includes('lowVision') ? ' app-low-vision' : ''}${screen === 'navigate' ? ' is-travelling' : ''}${preferences.settings.textScale === 1.25 ? ' app-text-scale-125' : preferences.settings.textScale === 1.5 ? ' app-text-scale-150' : ''}`}
       onPointerDown={() => {
         if (started && !touched) setTouched(true);
-        retryRealtimeOnTap();
       }}
+      // While a text field is focused (the phone keyboard is up), the extras fold away to keep the conversation visible.
+      onFocusCapture={(event) => { if (event.target instanceof HTMLInputElement && event.target.closest('.command-form, .trip-edit')) setTypingFocus(true); }}
+      onBlurCapture={(event) => { if (event.target instanceof HTMLInputElement && event.target.closest('.command-form, .trip-edit')) setTypingFocus(false); }}
     >
       {!started && (
         <main className="start-screen">
@@ -2176,6 +2463,7 @@ export function App() {
                 <span aria-hidden="true">↺</span> New route
               </button>
             )}
+            {rtActive && cameraGranted && !voiceFirst && <CameraPeek />}
           </div>
 
           {/* The trips people make most, one tap each, while there is no destination yet. */}
@@ -2201,8 +2489,6 @@ export function App() {
               ))}
             </div>
           )}
-
-          {rtActive && cameraGranted && !voiceFirst && <CameraPeek />}
 
           <section className="convo" aria-label="Conversation">
             {heard && <p className="convo-heard"><span className="sr-only">You said: </span>“{heard}”</p>}
@@ -2262,9 +2548,17 @@ export function App() {
           </ol>
 
           {!voiceFirst && (
-            <div className="hud-arrow" aria-hidden="true" style={guidance.compassReliable && guidance.headingDeltaDeg != null ? { transform: `rotate(${guidance.headingDeltaDeg}deg)` } : undefined}>
-              {guidance.compassReliable && guidance.headingDeltaDeg != null ? '↑' : maneuverGlyph(guidance.currentStep?.maneuver)}
-            </div>
+            <svg className="hud-arrow" viewBox="0 0 100 100" aria-hidden="true">
+              <text
+                className="hud-arrow-glyph"
+                x="50"
+                y="68"
+                textAnchor="middle"
+                transform={guidance.compassReliable && guidance.headingDeltaDeg != null ? `rotate(${guidance.headingDeltaDeg} 50 50)` : undefined}
+              >
+                {guidance.compassReliable && guidance.headingDeltaDeg != null ? '↑' : maneuverGlyph(guidance.currentStep?.maneuver)}
+              </text>
+            </svg>
           )}
 
           <section className="hud-panel" aria-label="Current instruction">
@@ -2383,6 +2677,10 @@ export function App() {
             <span><strong>System check</strong><small>Tests every part live: map, routing, AI, speech, camera, sensors. Or say: system check.</small></span>
             <button className="button button-ghost" type="button" onClick={() => setSystemCheckOpen(true)}>Run system check</button>
           </div>
+          <div className="setting-control">
+            <span><strong>How PolyGuide works</strong><small>The short guide from the first start. Or say: how does it work.</small></span>
+            <button className="button button-ghost" type="button" onClick={openTutorial}>Show the guide</button>
+          </div>
           <label className="toggle-row"><input type="checkbox" checked={demoWalk} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, demoWalk: event.target.checked } }))} /><span><strong>Demo walk (presentations)</strong><small>Walks the route at a calm pace without moving, and rides elevators through the floor sensor. Shown as DEMO on screen.</small></span></label>
           {survey?.enabled && (
             <form className="setting-control survey" onSubmit={(event) => void captureSpot(event)}>
@@ -2409,6 +2707,10 @@ export function App() {
             </div>
           </section>
         </div>
+      )}
+
+      {started && tutorialIndex != null && (
+        <Tutorial index={tutorialIndex} onIndex={setTutorialIndex} onDone={() => finishTutorial()} />
       )}
 
       {systemCheckOpen && (
@@ -2445,6 +2747,11 @@ export function App() {
           language={profile.language ?? 'en'}
           onCommand={(transcript) => { void dispatchCommand(transcript); }}
         />
+        {preferences.settings.realtimeVoice && rtStatus === 'error' && (
+          <button className="button button-ghost voice-retry" type="button" onClick={() => void connectRealtime()}>
+            Retry conversational voice
+          </button>
+        )}
         </div>
       </footer>
     </div>

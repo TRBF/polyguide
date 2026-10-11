@@ -141,6 +141,8 @@ export interface LiveStateInput {
   lastSeen?: { summary: string; ageS: number };
   /** The altimeter's line ("Floor sensor: floor G (sure, 91 %, from elevator)…"); it is the authority on the floor. */
   floorSensor?: string;
+  /** Set while the how-it-works guide is open. */
+  guide?: string;
 }
 
 export function formatLiveState(s: LiveStateInput): string {
@@ -159,6 +161,7 @@ export function formatLiveState(s: LiveStateInput): string {
   lines.push(`Position: ${s.estimate.text}. Confidence: ${s.estimate.confidence}.`);
   if (s.info?.ok && !s.info.fromGps) lines.push(`Floor ${s.info.floor}.`);
   // Height is measured, not guessed: when the floor sensor is sure, trust it over a floor letter the camera read.
+  if (s.guide) lines.push(s.guide);
   if (s.floorSensor) lines.push(`${s.floorSensor} When it is sure, it decides the floor; a sign's floor letter that disagrees is probably misread.`);
 
   if (h == null) lines.push('Heading: unknown (no compass). Use landmarks and the camera, not degrees.');

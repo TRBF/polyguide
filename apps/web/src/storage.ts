@@ -18,6 +18,8 @@ export interface AppSettings {
   realtimeVoice: boolean;
   /** Presentations: simulated walking along the route (clearly labelled on screen). */
   demoWalk: boolean;
+  /** The "how it works" guide was shown once (it can be reopened from settings or by voice). */
+  tutorialSeen: boolean;
 }
 
 export interface Preferences {
@@ -41,6 +43,7 @@ export const defaultPreferences: Preferences = {
     permissionsGranted: false,
     realtimeVoice: true,
     demoWalk: false,
+    tutorialSeen: false,
   },
 };
 
@@ -82,6 +85,7 @@ export function loadPreferences(): Preferences {
         permissionsGranted: settingsData.permissionsGranted === true,
         realtimeVoice: settingsData.realtimeVoice !== false,
         demoWalk: settingsData.demoWalk === true,
+        tutorialSeen: settingsData.tutorialSeen === true,
       },
     };
   } catch {

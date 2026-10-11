@@ -50,6 +50,21 @@ const looksLikeRoom = (text: string) => /\d/.test(text) && text.split(/\s+/).len
 const shortReply = (text: string) => text.split(/\s+/).length <= 5;
 const placeText = (transcript: string) => transcript.trim().replace(/[?!.,]+$/g, '').replace(/^the\s+/i, '');
 
+export interface TripRequest {
+  fromText: string;
+  toText: string;
+}
+
+/** Extract both ends of a spoken trip when the AI agent is unavailable. */
+export function parseTripRequest(transcript: string): TripRequest | null {
+  const text = transcript.trim().replace(/[‘’]/g, "'").replace(/\s+/g, ' ');
+  const match = text.match(/^(?:i am|i'm|im)\s+(?:currently\s+)?(?:at|in|near|by|next to|outside|inside|standing at)\s+(.+?)\s*(?:[,;.]?\s+(?:and\s+)?(?:i\s+)?(?:want|would like|need)\s+to\s+(?:go|get)\s+to|[,;.]?\s+(?:and\s+)?(?:please\s+)?(?:take me|navigate|guide me|bring me)\s+to)\s+(.+?)\s*[.!?]*$/i);
+  const fromText = match?.[1]?.trim().replace(/[,.]+$/g, '');
+  const toText = match?.[2]?.trim().replace(/[,.!?]+$/g, '');
+  if (!fromText || !toText) return null;
+  return { fromText, toText };
+}
+
 /**
  * Reads a reply as the answer to the question the screen asked. On "Where are you?" a bare place is where the
  * user is, not where they want to go (and the reverse on "Where to?"). An explicit "take me to …" / "I'm at …"
@@ -76,6 +91,7 @@ export type AppCommand =
   | { type: 'change_needs' }
   | { type: 'start_over' }
   | { type: 'system_check' }
+  | { type: 'tutorial' }
   | { type: 'yes' }
   | { type: 'no' }
   | { type: 'repeat_slower' }
@@ -86,6 +102,7 @@ export function parseAppCommand(transcript: string): AppCommand | null {
   if (/^(?:emergency|it's an emergency|call (?:for )?help|call an ambulance|call 112|call 144|i need (?:urgent|emergency) help|help me please|i am hurt|i'm hurt|i fell|i have fallen|sos)$/.test(text)) return { type: 'emergency' };
   if (/\b(?:elevator|lift)\b.*\b(?:not working|broken|out of order|out of service|closed|doesn't work|does not work|isn't working|is not working|won't come|stuck)\b|^(?:broken|no) (?:elevator|lift)$/.test(text)) return { type: 'elevator_broken' };
   if (/^(?:change|edit|update) (?:my )?(?:needs|profile|preferences)$/.test(text)) return { type: 'change_needs' };
+  if (/^(?:how does (?:it|this|the app|polyguide) work|how do i use (?:it|this|the app|polyguide)|(?:show|open|start|play)(?: me)? the (?:guide|tutorial|introduction)|tutorial|guide|introduction|wie funktioniert (?:das|es|die app))$/.test(text)) return { type: 'tutorial' };
   if (/^(?:system check|status check|check the system|run (?:a )?(?:system check|diagnostics)|is everything working|systemcheck)$/.test(text)) return { type: 'system_check' };
   if (/^(?:start over|start again|restart|reset|start from scratch|new (?:trip|route|destination)|(?:plan |make )?(?:a |another )?new route|another (?:route|trip|destination)|cancel (?:the |this )?(?:route|trip)|clear (?:the |this )?(?:route|trip)|neue route|von vorne)$/.test(text)) return { type: 'start_over' };
   if (/^(?:yes|yeah|yep|yes please|correct|that's right|ok|okay|sure|sounds good|go ahead|let's go)$/.test(text)) return { type: 'yes' };

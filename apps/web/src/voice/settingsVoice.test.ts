@@ -6,7 +6,7 @@ const prefs: Preferences = {
   profile: { needs: [], language: 'en', stepLengthM: 0.7 },
   settings: {
     voiceFirst: false, speechRate: 1, speakWithAppVoice: true, beaconEnabled: true, stepLengthM: 0.7,
-    voiceName: null, haptics: true, textScale: 1, permissionsGranted: true, realtimeVoice: true, demoWalk: false,
+    voiceName: null, haptics: true, textScale: 1, permissionsGranted: true, realtimeVoice: true, demoWalk: false, tutorialSeen: true,
   },
 } as Preferences;
 

@@ -62,6 +62,7 @@ h1, h2 { font-weight: 700; letter-spacing: -.01em; }
 .app-shell > main,
 .top-bar,
 .dock .voice-bar { width: min(100% - 2 * var(--gutter), var(--page)); margin-inline: auto; }
+.dock .voice-retry { display: block; width: min(100% - 2 * var(--gutter), var(--page)); min-height: 44px; margin: var(--sp-2) auto 0; }
 .top-bar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); padding-block: var(--sp-3); }
 .brand { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: 19px; }
 .brand-mark { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 20px; }
@@ -93,7 +94,7 @@ h1, h2 { font-weight: 700; letter-spacing: -.01em; }
 .start-note { color: var(--muted); font-size: var(--t-sm); }
 
 /* ───────── Trip: from / to / conversation ───────── */
-.trip { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: var(--sp-3); padding-bottom: var(--sp-3); }
+.trip { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: var(--sp-3); padding-bottom: var(--sp-3); overflow-y: auto; overscroll-behavior: contain; }
 .trip-card { position: relative; border-radius: var(--r-lg); background: var(--s1); border: 1px solid var(--line); }
 .trip-card::before { content: ''; position: absolute; left: 27px; top: 34px; bottom: 34px; width: 2px; background: var(--line); }
 .trip-row { position: relative; display: flex; align-items: center; min-height: 72px; padding-left: 48px; }
@@ -121,7 +122,10 @@ h1, h2 { font-weight: 700; letter-spacing: -.01em; }
 .trip-tool:disabled { color: var(--muted); }
 .app-voice-first .trip-tool { min-height: 56px; font-size: var(--t-body); }
 /* Quick destinations while "To" is empty. */
-.quick-picks { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.quick-picks { flex: 0 0 auto; display: flex; flex-wrap: nowrap; gap: var(--sp-2); overflow-x: auto; scrollbar-width: none; margin-inline: calc(-1 * var(--gutter)); padding-inline: var(--gutter); scroll-padding-inline: var(--gutter); }
+.quick-picks::-webkit-scrollbar, .trip .need-chips::-webkit-scrollbar { display: none; }
+.quick-picks > *, .trip .need-chips > * { flex: 0 0 auto; }
+.trip .need-chips { flex: 0 0 auto; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-inline: calc(-1 * var(--gutter)); padding-inline: var(--gutter); }
 .quick-picks .chip { color: var(--text); border-color: var(--line); background: var(--s1); }
 .quick-picks .chip-recent { color: var(--accent); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-label { align-self: center; min-width: 52px; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
@@ -137,7 +141,7 @@ h1, h2 { font-weight: 700; letter-spacing: -.01em; }
 .chip[aria-pressed='true'] { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
 .chip[aria-pressed='true']::before { content: '✓ '; }
 
-.convo { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-4); border-radius: var(--r-lg); background: var(--s1); border: 1px solid var(--line); overflow: auto; }
+.convo { flex: 1 1 auto; min-height: min(148px, 24dvh); display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-4); border-radius: var(--r-lg); background: var(--s1); border: 1px solid var(--line); overflow: auto; }
 .convo-heard { align-self: flex-end; max-width: 90%; padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md) var(--r-md) 4px var(--r-md); background: var(--s3); color: var(--text); font-size: var(--t-body); }
 .convo-reply { font-size: var(--t-lg); font-weight: 700; line-height: 1.35; }
 .convo-reply.is-thinking { color: var(--muted); font-weight: 400; }
@@ -198,7 +202,8 @@ h1, h2 { font-weight: 700; letter-spacing: -.01em; }
 .hud-track li { flex: 1; height: 5px; border-radius: 3px; background: rgba(255,255,255,.28); }
 .hud-track li.done { background: var(--go); }
 .hud-track li.current { background: var(--accent); }
-.hud-arrow { flex: 1; min-height: 0; display: grid; place-items: center; color: var(--accent); font-size: min(30vh, 180px); font-weight: 700; line-height: 1; text-shadow: 0 4px 24px rgba(0,0,0,.7); transition: transform .25s ease; }
+.hud-arrow { flex: 1; min-height: 0; display: block; width: 100%; color: var(--accent); font-size: min(30vh, 180px); font-weight: 700; line-height: 1; overflow: visible; }
+.hud-arrow-glyph { fill: currentColor; filter: drop-shadow(0 4px 24px rgba(0,0,0,.7)); transition: transform .25s ease; }
 .hud-minimal .hud-panel { margin-top: auto; }
 /* Never pushed under the dock on short phones: the panel itself scrolls as a last resort, buttons stay reachable. */
 .hud-panel { min-height: 0; max-height: 100%; overflow-y: auto; overscroll-behavior: contain; display: grid; gap: var(--sp-2); padding: var(--sp-4); border: 1px solid var(--glass-line); border-radius: var(--r-lg); background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
@@ -229,6 +234,62 @@ h1, h2 { font-weight: 700; letter-spacing: -.01em; }
 .sheet-backdrop { position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-end; justify-content: center; background: rgba(0,0,0,.6); }
 .sheet { width: min(100%, var(--page)); max-height: 88dvh; overflow: auto; padding: var(--sp-4); border-radius: var(--r-lg) var(--r-lg) 0 0; background: var(--s1); border: 1px solid var(--line); display: grid; gap: var(--sp-3); }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; }
+/* First-run guide: a full-screen sheet in the app's own style. One step per screen, buttons pinned to the bottom. */
+.guide { position: fixed; inset: 0; z-index: 60; display: grid; grid-template-rows: auto 1fr auto; background: var(--bg); animation: fade-in .35s ease-out both; }
+.guide.is-leaving { animation: fade-out .2s ease-in both; pointer-events: none; }
+@keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
+.guide-top { display: flex; align-items: center; gap: var(--sp-4); width: min(100% - 2 * var(--gutter), var(--page)); margin-inline: auto; padding-top: var(--sp-4); }
+.guide-progress { flex: 1; display: flex; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.guide-progress li { flex: 1; height: 4px; border-radius: 2px; background: var(--s3); }
+.guide-progress li.is-done { background: var(--muted); }
+.guide-progress li.is-current { background: var(--accent); }
+.guide-skip { min-height: 44px; padding: 0 var(--sp-2); border: 0; background: transparent; color: var(--muted); font-size: var(--t-sm); font-weight: 700; }
+.guide-main { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; justify-content: center; gap: var(--sp-3); width: min(100% - 2 * var(--gutter), var(--page)); margin-inline: auto; padding-block: var(--sp-4); animation: guide-in .22s ease-out; }
+@keyframes guide-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.guide-count { margin-top: var(--sp-3); color: var(--muted); font-size: var(--t-sm); font-weight: 700; font-variant-numeric: tabular-nums; }
+.guide h2 { font-size: 26px; line-height: 1.15; letter-spacing: -0.01em; outline: none; }
+.guide-body { max-width: 34ch; color: #cfcfd6; font-size: var(--t-body); line-height: 1.5; }
+.guide-actions { display: grid; grid-template-columns: 1fr 2fr; gap: var(--sp-2); width: min(100% - 2 * var(--gutter), var(--page)); margin-inline: auto; padding-block: var(--sp-3) max(var(--sp-4), env(safe-area-inset-bottom)); }
+.guide-actions.is-first { grid-template-columns: 1fr; }
+.guide-actions .button { min-height: 56px; }
+.guide-voice { grid-column: 1 / -1; color: var(--muted); font-size: 14px; text-align: center; }
+
+/* The pictures: small versions of the real interface, not decoration. */
+.g-art { display: grid; gap: var(--sp-2); padding: var(--sp-4); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--s1); }
+.g-bubble { justify-self: end; max-width: 85%; padding: 8px 12px; border-radius: 14px 14px 4px 14px; background: var(--s3); font-size: var(--t-sm); }
+.g-trip { position: relative; display: grid; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--s2); }
+.g-trip-row { display: flex; align-items: center; gap: var(--sp-3); padding: 10px var(--sp-3); font-weight: 700; }
+.g-trip-row + .g-trip-row { border-top: 1px solid var(--line); }
+.g-trip-row small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
+.g-dot { flex: 0 0 10px; height: 10px; border-radius: 50%; }
+.g-dot-from { background: var(--from); }
+.g-dot-to { background: var(--accent); }
+.g-confirm { display: grid; grid-template-columns: 2fr 1fr; gap: var(--sp-2); }
+.g-btn { display: grid; place-items: center; min-height: 36px; border: 1px solid var(--line); border-radius: var(--r-md); font-size: 14px; font-weight: 700; }
+.g-btn-yes { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
+.g-viewfinder { position: relative; height: 150px; border-radius: var(--r-md); background: linear-gradient(180deg, #3b3a36, #2a2926); overflow: hidden; }
+.g-corner { position: absolute; width: 18px; height: 18px; border-color: var(--accent); border-style: solid; border-width: 0; }
+.g-tl { top: 10px; left: 10px; border-top-width: 3px; border-left-width: 3px; }
+.g-tr { top: 10px; right: 10px; border-top-width: 3px; border-right-width: 3px; }
+.g-bl { bottom: 10px; left: 10px; border-bottom-width: 3px; border-left-width: 3px; }
+.g-br { bottom: 10px; right: 10px; border-bottom-width: 3px; border-right-width: 3px; }
+.g-door { position: absolute; right: 22%; top: 18px; bottom: 0; width: 30%; border: 3px solid #6b4a2b; border-bottom: 0; background: #5a3d22; }
+.g-sign { position: absolute; left: 16%; top: 42px; display: grid; padding: 8px 12px; border-radius: 4px; background: #f2f2ee; color: #111; }
+.g-sign strong { font-size: 17px; letter-spacing: .02em; }
+.g-sign small { color: #555; font-size: 11px; }
+.g-answer { padding: 8px 12px; border-left: 3px solid var(--go); border-radius: 6px; background: var(--s2); font-size: var(--t-sm); font-weight: 700; }
+.g-art-haptics { gap: 0; padding-block: var(--sp-2); }
+.g-pattern { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); padding: 12px 0; }
+.g-pattern + .g-pattern { border-top: 1px solid var(--line); }
+.g-pattern-label { font-weight: 700; }
+.g-pulses { display: flex; gap: 6px; }
+.g-pulses i { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); }
+.g-pulses i.is-long { width: 44px; border-radius: 6px; }
+.g-art-voice { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.g-chip { padding: 8px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--s2); font-size: 14px; font-weight: 700; }
+.g-chip-danger { border-color: var(--danger-solid); background: var(--danger-solid); color: #fff; }
+@media (prefers-reduced-motion: reduce) { .guide-main { animation: none; } }
+@media (max-height: 640px) { .g-viewfinder { height: 110px; } .guide h2 { font-size: 22px; } }
 .check-summary { color: var(--muted); font-weight: 700; }
 .check-list { display: grid; gap: var(--sp-2); padding: 0; margin: 0; list-style: none; }
 .check { display: flex; align-items: flex-start; gap: var(--sp-3); padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--s2); }
@@ -302,8 +363,22 @@ h1, h2 { font-weight: 700; letter-spacing: -.01em; }
 .map-note { padding: 10px 14px; background: var(--accent); color: var(--accent-ink); font-weight: 700; }
 
 /* ───────── Small phones ───────── */
+@media (max-height: 560px) {
+  /* Keep the route proposal and its confirmation above the fixed voice dock on short screens. */
+  .top-bar { padding-block: var(--sp-2); }
+  .trip { gap: var(--sp-2); padding-bottom: var(--sp-2); }
+  .trip-row, .trip-value { min-height: 52px; }
+  .trip-card::before { top: 25px; bottom: 25px; }
+  .trip-tools, .quick-picks, .need-chips { display: none; }
+  .convo { gap: var(--sp-2); padding: var(--sp-3); }
+  .convo-actions { margin-top: 0; }
+  .dock { padding-block: var(--sp-2); padding-bottom: calc(var(--sp-2) + env(safe-area-inset-bottom)); }
+  .button-mic, .button-keyboard { min-height: 52px; }
+  .button-keyboard { width: 52px; }
+  .command-form { margin-top: var(--sp-1); }
+  .command-form input, .button-command { min-height: 48px; }
+}
 @media (max-height: 640px) {
-  .trip-row, .trip-value { min-height: 60px; }
   .button-big { min-height: 56px; }
   .hud-instruction { font-size: 24px; }
 }
@@ -316,12 +391,49 @@ h1, h2 { font-weight: 700; letter-spacing: -.01em; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: .01ms !important; animation: none !important; scroll-behavior: auto !important; }
 }
+.app-text-scale-125 { zoom: 1.25; }
+.app-text-scale-150 { zoom: 1.5; }
 .app-low-vision { font-size: 120%; }
 .app-low-vision .convo-reply, .app-low-vision .hud-instruction { font-size: var(--t-2xl); }
 .app-low-vision .button { border-width: 3px; }
+.sensor-debug-page { box-sizing: border-box; min-height: 100dvh; padding: 16px; max-width: 560px; margin: 0 auto; overflow-y: auto; }
+.sensor-debug-arrow { display: block; width: 100%; height: 120px; color: var(--accent); }
+.sensor-debug-arrow text { fill: currentColor; font-size: 96px; }
+.sensor-debug-table { width: 100%; font-size: 18px; }
+.sensor-debug-table th { text-align: left; padding-right: 12px; }
+.sensor-debug-range { width: 100%; }
+.sensor-debug-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.ios-haptic-switch { position: fixed; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; left: -10px; top: -10px; }
 
 /* What the voice assistant sees (trip screen, while the conversational voice runs). */
-.camera-peek { position: relative; align-self: flex-end; width: min(36vw, 160px); aspect-ratio: 4 / 3; margin: 0; overflow: hidden; border: 2px solid var(--line); border-radius: var(--r-md); background: #000; }
+.camera-peek { position: relative; flex: 0 0 64px; height: 48px; margin: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-md); background: #000; animation: fade-in .3s ease-out; }
 .camera-peek[hidden] { display: none; }
 .camera-peek video { width: 100%; height: 100%; object-fit: cover; display: block; }
-.camera-peek figcaption { position: absolute; left: 0; right: 0; bottom: 0; padding: 2px 6px; background: rgba(0, 0, 0, .6); color: #fff; font-size: 12px; }
+.camera-peek figcaption { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; overflow: hidden; border-radius: 50%; background: var(--go); color: transparent; font-size: 0; }
+
+/* Calm arrivals: each screen fades in, and the trip screen's parts settle in one after another instead of all
+   at once. Short (under 0.4 s in total) so it never slows anyone down; off for reduced motion. */
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes settle { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.app-shell > main.trip > *, .app-shell > main.settings, .app-shell > main.arrived > * { animation: settle .28s ease-out both; }
+.app-shell > main.trip > :nth-child(2) { animation-delay: .04s; }
+.app-shell > main.trip > :nth-child(3) { animation-delay: .08s; }
+.app-shell > main.trip > :nth-child(4) { animation-delay: .12s; }
+.app-shell > main.trip > :nth-child(5) { animation-delay: .16s; }
+.app-shell > main.trip > :nth-child(n+6) { animation-delay: .2s; }
+.app-shell > main.hud { animation: fade-in .35s ease-out both; }
+.app-shell > .dock { animation: fade-in .4s ease-out .15s both; }
+@media (prefers-reduced-motion: reduce) {
+  .app-shell > main.trip > *, .app-shell > main.settings, .app-shell > main.arrived > *, .app-shell > main.hud, .app-shell > .dock, .camera-peek, .guide { animation: none; }
+}
+
+/* Typing: the phone keyboard takes half the screen. Keep what matters (the trip, the conversation, the text
+   field) and fold the extras away until the keyboard closes. */
+.app-shell.is-typing .trip-tools,
+.app-shell.is-typing .quick-picks,
+.app-shell.is-typing .trip .need-chips,
+.app-shell:has(.dock .command-form:not([hidden])) .trip-tools,
+.app-shell:has(.dock .command-form:not([hidden])) .quick-picks,
+.app-shell:has(.dock .command-form:not([hidden])) .trip .need-chips { display: none; }
+.app-shell.is-typing .convo,
+.app-shell:has(.dock .command-form:not([hidden])) .convo { min-height: 96px; }

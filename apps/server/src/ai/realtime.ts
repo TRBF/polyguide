@@ -129,6 +129,17 @@ const TOOLS = [
   },
   {
     type: 'function',
+    name: 'tutorial',
+    description: 'The short how-it-works guide (4 cards). open: start it ("how does it work?"); next / back: move while it is open; skip: close it. The result has a "say" text: say it word for word.',
+    parameters: {
+      type: 'object',
+      properties: { action: { type: 'string', enum: ['open', 'next', 'back', 'skip'] } },
+      required: ['action'],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: 'function',
     name: 'start_over',
     description: 'A new trip from scratch ("new route", "start over", "somewhere else", "cancel this route"): stops guidance, clears the destination, keeps where the user is as the new start.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
@@ -188,6 +199,7 @@ Position sources, best first: a room sign you read in a photo; the user saying w
 - A tool result may contain "app_said": app messages that were not spoken yet. Say them (instructions word for word) in your answer.
 - Some of your own earlier turns are app announcements you read aloud (step instructions, warnings); they are the app talking, not you deciding.
 - Needs ("I use a wheelchair", "avoid stairs", "I am blind") → set_needs. Elevator out of order → report_elevator_broken. Danger, hurt, fell → emergency immediately.
+- "How does it work?", "show me the guide" → tutorial open; while the live state says the guide is open, next/back/skip/start → tutorial.
 - Settings by voice ("speak slower", "turn off vibration", "bigger text", "voice only mode", "speak German", "what are my settings") → settings. A new trip from scratch ("new route", "start over", "cancel this route") → start_over, then ask where they want to go.
 
 # Building
