@@ -87,3 +87,29 @@ describe('hardening', () => {
     expect(sanitizeUtterance('Der Gang ist sicher.')).toBe('');
   });
 });
+
+describe('camera requests (blind users cannot aim)', () => {
+  const camera = (t: string) => postProcessVision({ utterance: t, sceneSummary: t, confidence: 0.9 }, 1);
+  it('drops sentences that ask to move, aim or relight the camera', () => {
+    for (const t of [
+      'Please hold the phone higher.',
+      'Try a better angle.',
+      'Point the camera at the sign.',
+      'I need more light to read it.',
+      'Move closer to the wall.',
+      'The image is too blurry, try again.',
+    ]) {
+      expect(camera(t).utterance).toBe('');
+      expect(camera(t).sceneSummary).toBe('');
+    }
+  });
+
+  it('keeps what was actually seen around such a request', () => {
+    expect(camera('A room sign on the left reads F 33. Please hold the phone higher.').utterance).toBe('A room sign on the left reads F 33.');
+    expect(camera('Turn left at the glass door ahead.').utterance).toBe('Turn left at the glass door ahead.');
+  });
+
+  it('leaves the agent and other callers unfiltered unless asked', () => {
+    expect(sanitizeUtterance('Point the camera at the sign.')).toBe('Point the camera at the sign.');
+  });
+});

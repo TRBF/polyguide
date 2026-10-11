@@ -124,8 +124,9 @@ function roughDistance(a: Place, b: Place): number {
   return Math.hypot(pa.x - pb.x, pa.y - pb.y) + 20 * Math.abs((a.verticalOrder ?? 0) - (b.verticalOrder ?? 0));
 }
 
-export function searchPlaces(q: string, limit = 10, kind?: Place['kind'], nearPlaceId?: string): Place[] {
-  const near = nearPlaceId ? getPlace(nearPlaceId) : undefined;
+/** `near` is a place id, or a place-like position (e.g. where a walking user is on their route). */
+export function searchPlaces(q: string, limit = 10, kind?: Place['kind'], nearPlace?: string | Place): Place[] {
+  const near = typeof nearPlace === 'string' ? getPlace(nearPlace) : nearPlace;
   if (near && q.trim()) {
     // Rank every match by distance from the user, not by text score alone ("seminar room" near me).
     return matchPlaces(q, { limit: 1000, kind, byType: true })

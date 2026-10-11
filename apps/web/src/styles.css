@@ -108,6 +108,13 @@ h1, h2 { font-weight: 700; letter-spacing: -.01em; }
 .trip-value strong { font-size: var(--t-lg); }
 .trip-row:not(.is-set) .trip-value strong { color: var(--muted); font-weight: 400; }
 .trip-value em { color: var(--muted); font-style: normal; font-size: var(--t-sm); }
+.survey { display: grid; gap: var(--sp-3); }
+.survey-field { display: grid; gap: var(--sp-1); font-weight: 700; font-size: var(--t-sm); }
+.survey-field input { min-height: 48px; padding: 0 var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--s2); color: var(--text); font-size: var(--t-body); }
+.survey-message { color: var(--go); font-weight: 700; font-size: var(--t-sm); }
+.trip-locate { flex: 0 0 auto; min-height: 48px; display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--s1); color: var(--from); font-weight: 700; font-size: var(--t-sm); }
+.trip-locate:disabled { color: var(--muted); }
+.app-voice-first .trip-locate { min-height: 56px; font-size: var(--t-body); }
 .trip-edit { flex: 1; display: flex; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3) var(--sp-2) 0; }
 .trip-edit input { flex: 1; min-width: 0; min-height: 52px; padding: 0 var(--sp-3); border: 2px solid var(--accent); border-radius: var(--r-sm); background: var(--bg); }
 .trip-edit .button { min-height: 52px; padding: 0 var(--sp-3); }

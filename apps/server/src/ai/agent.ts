@@ -45,6 +45,8 @@ const requestSchema = z.object({
     needs: z.array(z.enum(['wheelchair', 'blind', 'lowVision', 'lowStamina', 'avoidCrowds'])).default([]),
     avoidStairs: z.boolean().optional(),
     step: z.string().max(300).optional(),
+    /** While walking: a graph node on the current step, so "I'm at the elevator" means the one nearby. */
+    nearNodeId: z.string().max(80).optional(),
   }),
   language: z.enum(['en', 'de']).optional(),
 });
@@ -111,6 +113,7 @@ ${buildingFacts()}
 
 Actions:
 - set_trip: the user names where they are and/or where to go ("I'm in F7 and want to get to F30", "take me to the Audimax", "I'm at the main entrance"). Put the start in from_text and the goal in to_text, normalised to a room code from the list when it is a room ("HG F 7"), else the place as said ("nearest toilet", "main entrance", "a seminar room"). Leave reply empty.
+- While walking (phase navigate) the user may tell you where they are: "I'm at F 33", "I'm next to E 12", "I can feel the sign says G 5", "I'm at the elevator". That is set_trip with only from_text (their position) and to_text null. Believe them: the user knows where they stand better than the camera does.
 - confirm / reject: yes or no to the trip the app just proposed (phase "confirm"). "Yes, start", "correct", "let's go" = confirm. "No", "wrong" = reject; if they also correct a place, use set_trip instead.
 - choose_option: picking from options the app read out ("the second one", "number 2", "F 33.1") → option = its number.
 - set_needs: "I'm blind", "I use a wheelchair", "avoid stairs", "I'm not in a wheelchair" → needs_add / needs_remove (wheelchair, blind, lowVision, avoidStairs). Reply with a short confirmation.
@@ -132,7 +135,11 @@ interface Resolved {
 const spoken = (p: Place) => (p.kind === 'entrance' && p.label ? p.label : p.label && p.kind === 'room' ? `${p.name}, the ${p.label}` : p.name);
 
 /** "nearest toilet", "a seminar room", "exit", "Audimax", "HG F 7" → a place, or options when ambiguous. */
-export function resolvePlace(text: string, near: Place | undefined, needs: string[], avoidStairs = false): Resolved {
+/**
+ * `position`: the user says they are AT this kind of place ("I'm at the elevator"), so the nearest one counts, even
+ * the one on their own node. Otherwise it is a destination: never the place they stand in, and the quickest by route.
+ */
+export function resolvePlace(text: string, near: Place | undefined, needs: string[], avoidStairs = false, position = false): Resolved {
   let q = text.trim().replace(/^(?:the|a|an|room)\s+/i, '').replace(/^(?:nearest|closest)\s+/i, '');
   const wantsNearest = /^(?:the\s+)?(?:nearest|closest)\s/i.test(text.trim()) || /^(?:a|an|any)\s/i.test(text.trim());
   const g = getGraph();
@@ -146,8 +153,9 @@ export function resolvePlace(text: string, near: Place | undefined, needs: strin
   if (needs.includes('wheelchair') && /\b(?:toilet|bathroom|restroom|wc|loo)\b/i.test(q) && !/accessible/i.test(q)) q = 'accessible toilet';
   const generic = wantsNearest || Boolean(useTypeFromText(q)) || /\b(?:toilet|bathroom|restroom|wc|elevator|lift|cafe|cafeteria|food|library|printer|printing|lounge|cloakroom|entrance)\b/i.test(q);
   if (generic) {
-    const found = searchPlaces(q, 8, undefined, ref?.id).filter((p) => p.nodeId !== near?.nodeId);
-    return { place: quickestReachable(near, found, needs, avoidStairs) };
+    const found = searchPlaces(q, 8, undefined, ref);
+    if (position) return { place: found[0] };
+    return { place: quickestReachable(near, found.filter((p) => p.nodeId !== near?.nodeId), needs, avoidStairs) };
   }
   // A room code or a name.
   const exact = g.places.find((p) => p.kind === 'room' && (normRoom(p.name) === normRoom(q) || normRoom(p.name) === `HG${normRoom(q)}`));
@@ -156,6 +164,12 @@ export function resolvePlace(text: string, near: Place | undefined, needs: strin
   if (!matches.length) return {};
   const [best, second] = matches;
   if (best.confidence >= 0.9 || (best.confidence >= 0.6 && (!second || best.confidence - second.confidence >= 0.2))) return { place: best.place };
+  // A walking user saying "I'm at F 33" where only F 33.2–33.5 exist: we know roughly where they are on the
+  // route, so take the matching room closest to that instead of making them pick a number mid-corridor.
+  if (position && near && best.confidence >= 0.5) {
+    const close = matches.filter((m) => m.confidence >= best.confidence - 0.15).sort((a, b) => dist(near, a.place) - dist(near, b.place));
+    return { place: close[0].place };
+  }
   return { options: matches.slice(0, 4).map((m) => m.place) };
 }
 
@@ -177,6 +191,14 @@ function quickestReachable(near: Place | undefined, candidates: Place[], needs: 
     }
   }
   return best?.place ?? candidates[0];
+}
+
+/** A graph node as a place-like position, for "near me" searches. */
+function positionAt(nodeId: string | undefined): Place | undefined {
+  if (!nodeId) return undefined;
+  const n = getGraph().nodes.get(nodeId);
+  if (!n || n.lat == null || n.lon == null) return undefined;
+  return { id: `node:${n.id}`, name: 'your position', kind: 'landmark', levelId: n.levelId ?? '', verticalOrder: n.verticalOrder, lat: n.lat, lon: n.lon, nodeId: n.id, aliases: [] };
 }
 
 function dist(a: Place, b: Place): number {
@@ -257,7 +279,8 @@ agentRoutes.post('/agent', async (c) => {
 
     if (m.action === 'set_trip' || ((m.action === 'confirm' || m.action === 'none') && (m.from_text || m.to_text))) {
       const knownFrom = ctx.from ? getPlace(ctx.from.id) : undefined;
-      const fromR = m.from_text ? resolvePlace(m.from_text, undefined, ctx.needs) : {};
+      // A walking user saying where they are ("I'm at the elevator") means the one near their route position.
+      const fromR = m.from_text ? resolvePlace(m.from_text, positionAt(ctx.nearNodeId), ctx.needs, false, true) : {};
       const from = fromR.place ?? (m.from_text ? undefined : knownFrom);
       const toR = m.to_text ? resolvePlace(m.to_text, from ?? knownFrom, ctx.needs, Boolean(ctx.avoidStairs)) : {};
       const to = toR.place ?? (m.to_text ? undefined : ctx.to ? getPlace(ctx.to.id) : undefined);

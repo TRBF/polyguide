@@ -9,7 +9,13 @@ type Route = Extract<RouteResult, { ok: true }>;
 
 export const VISION_CONFIDENCE = 0.6;
 export const FRAME_PX = 640;
-export const LOCALIZE_FRAME_PX = 1024;
+export const LOCALIZE_FRAME_PX = 1280;
+/** Wall signs are small and far: anything that has to read one gets the camera's full width. */
+export function framePxFor(trigger: VisionTrigger): number {
+  if (trigger === 'localize' || trigger === 'user_query') return LOCALIZE_FRAME_PX;
+  if (trigger === 'approaching_node' || trigger === 'off_heading') return 960;
+  return FRAME_PX;
+}
 
 /* ───────────── Fusion (pure) ───────────── */
 
@@ -122,7 +128,7 @@ export class VisionController {
     this.deps.onBusy(true);
     let res: VisionResponse;
     try {
-      const imageJpegBase64 = await this.deps.capture(trigger === 'localize' ? LOCALIZE_FRAME_PX : FRAME_PX);
+      const imageJpegBase64 = await this.deps.capture(framePxFor(trigger));
       res = await this.deps.send({ ...body, imageJpegBase64 });
     } catch (err) {
       const timeout = err instanceof Error && err.name === 'AbortError';

@@ -229,6 +229,19 @@ export function App() {
     };
   }, [emergencyOpen]);
 
+  // Survey mode (team only): offered in settings when the server has a survey code configured.
+  const [survey, setSurvey] = useState<{ enabled: boolean; total: number } | null>(null);
+  const [surveyCode, setSurveyCode] = useState(() => { try { return localStorage.getItem('polyguide.surveyCode') ?? ''; } catch { return ''; } });
+  const [surveySpot, setSurveySpot] = useState('');
+  const [surveyBusy, setSurveyBusy] = useState(false);
+  const [surveyMessage, setSurveyMessage] = useState('');
+  useEffect(() => {
+    if (screen !== 'settings') return;
+    let cancelled = false;
+    void api.refsStatus().then((status) => { if (!cancelled && status) setSurvey({ enabled: status.enabled, total: status.total }); });
+    return () => { cancelled = true; };
+  }, [screen]);
+
   const dispatchQueue = useRef<Promise<void>>(Promise.resolve());
   const latestDispatch = useRef<(text: string) => Promise<void>>(async () => undefined);
   /** Changes whenever navigation ends; async work started earlier checks it before acting. */
@@ -702,6 +715,75 @@ export function App() {
     announce(`Rerouting from ${roomText}.`);
   }
 
+  /** Survey mode: photograph the spot the team member names and add its fingerprint to the library. */
+  async function captureSpot(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    const query = surveySpot.trim();
+    if (!query || !surveyCode) return;
+    setSurveyBusy(true);
+    setSurveyMessage('');
+    try {
+      const matches = await fetchPlaces(query);
+      const place = matches?.find((p) => sameName(p, query)) ?? matches?.[0];
+      if (!place) {
+        setSurveyMessage(`No place matches “${query}”.`);
+        return;
+      }
+      let imageJpegBase64: string;
+      try {
+        imageJpegBase64 = await captureRoomSignFrame(1280);
+      } catch {
+        setSurveyMessage('The camera is not available. Allow camera access and try again.');
+        return;
+      }
+      const r = await api.captureRef({ imageJpegBase64, placeId: place.id, ...(guidance.headingDeg != null ? { headingDeg: guidance.headingDeg } : {}) }, surveyCode);
+      if (!r.ok) {
+        setSurveyMessage(r.message);
+        return;
+      }
+      setSurvey((current) => (current ? { ...current, total: r.total } : current));
+      setSurveyMessage(`Saved at ${place.name}${r.signs.length ? `, read ${r.signs.join(', ')}` : ''}. ${r.total} spots in the library. Capture the same spot facing the other way too.`);
+    } finally {
+      setSurveyBusy(false);
+    }
+  }
+
+  /**
+   * "Where am I?": one camera frame plus the graph, answered in plain words ("You are on floor F, at HG F 33.2.
+   * The elevator is about 25 metres away."). Planning a trip, the spot becomes the starting point; walking, a
+   * confident reading that is off the route reroutes from there. Without a camera it still answers from the route.
+   */
+  async function locateMe(): Promise<void> {
+    const navigating = screen === 'navigate' && route ? route : null;
+    const token = navToken.current;
+    const prior = navigating ? guidance.currentStep?.startNodeId : (pendingRef.current?.from ?? origin)?.nodeId;
+    setThinking(true);
+    setMessage('Looking around…');
+    let imageJpegBase64: string | undefined;
+    if (cameraGranted) {
+      try { imageJpegBase64 = await captureRoomSignFrame(1280); } catch { /* answer from the route instead */ }
+    }
+    const r = await api.where({ imageJpegBase64, nearNodeId: prior, routeId: navigating?.routeId, language: profile.language });
+    setThinking(false);
+    if (token !== navToken.current && navigating) return; // the user stopped meanwhile
+    if (!r.ok) {
+      announce(r.message, 'vision');
+      return;
+    }
+    if (r.evidence.length) setGuidanceVision(r.evidence.join(' · '));
+    if (navigating) {
+      announce(r.description, 'vision');
+      if (r.onRoute === false && r.confidence >= 0.75) await rerouteFromNode(r.nodeId, r.place ? displayName(r.place) : 'here', token);
+      return;
+    }
+    // Planning: a spot found from the camera becomes the starting point (the user can still say no).
+    if (r.place && r.method !== 'route') {
+      const to = pendingRef.current?.to ?? destination ?? undefined;
+      setPending({ from: r.place, to: to && to.id !== r.place.id ? to : undefined });
+      announce(`${r.description} ${to && to.id !== r.place.id ? `Going to ${displayName(to)}. Is that right?` : 'That is your starting point now. Where do you want to go?'}`, 'info');
+    } else announce(r.description, 'info');
+  }
+
   async function checkCamera(trigger: VisionTrigger = 'user_query', quiet = false): Promise<void> {
     const token = navToken.current;
     const wasNavigating = screen === 'navigate';
@@ -952,16 +1034,8 @@ export function App() {
         else announce('There is nothing to stop right now.');
         return;
       case 'where_am_i':
-        if (screen === 'navigate') {
-          // The engine speaks the position and, with the camera on, reads the signs in view. Mirror the
-          // position on screen so the HUD shows what was said.
-          if (route) {
-            const step = route.steps[Math.min(guidance.stepIndex, route.steps.length - 1)];
-            setMessage(`Step ${guidance.stepIndex + 1} of ${route.steps.length}, floor ${step.levelId.split('.').at(-1)}, ${Math.round(guidance.remainingTotalM)} m to go.`);
-          }
-          guidance.whereAmI();
-        } else if (screen === 'where') announce(origin ? `Your starting point is ${origin.name}.` : 'Choose or scan a room to set your starting point.');
-        else announce(origin ? `You started from ${origin.name}.` : 'Your starting point has not been selected.');
+        // Camera + graph on every screen: signs, reference photos and the route, in one spoken sentence.
+        await locateMe();
         return;
       case 'whats_ahead':
         if (screen === 'navigate') {
@@ -1064,10 +1138,14 @@ export function App() {
       openSettings();
       return;
     }
-    // Walking: step commands never wait for the network.
+    // Walking: step commands never wait for the network. "Where am I?" goes straight to the camera anywhere.
+    const quick = parseCommand(said);
+    if (quick?.type === 'where_am_i') {
+      await runIntent(quick);
+      return;
+    }
     if (screen === 'navigate' || screen === 'arrived') {
-      const quick = parseCommand(said);
-      if (quick && ['next', 'back', 'repeat', 'stop', 'where_am_i', 'whats_ahead', 'help'].includes(quick.type)) {
+      if (quick && ['next', 'back', 'repeat', 'stop', 'whats_ahead', 'help'].includes(quick.type)) {
         await runIntent(quick);
         return;
       }
@@ -1099,7 +1177,7 @@ export function App() {
       ...(options.length ? { options: options.slice(0, MAX_OPTIONS).map((p) => ({ id: p.id, name: p.name })) } : {}),
       needs: profile.needs,
       avoidStairs: Boolean(profile.avoidStairs),
-      ...(screen === 'navigate' && guidance.currentStep ? { step: guidance.currentStep.text } : {}),
+      ...(screen === 'navigate' && guidance.currentStep ? { step: guidance.currentStep.text, nearNodeId: guidance.currentStep.startNodeId } : {}),
     };
   }
 
@@ -1107,6 +1185,15 @@ export function App() {
     misunderstood.current = 0;
     switch (r.action) {
       case 'set_trip': {
+        // Walking, and the user tells us where they are ("I'm at F 33") for the same destination: believe them
+        // and reroute from there at once. The person knows where they stand better than the camera or step count.
+        if (screen === 'navigate' && route && r.from && !r.options?.length && (!r.to || r.to.id === route.to.id) && r.from.id !== route.to.id) {
+          setPending(null);
+          setAgentOptions(null);
+          announce(`Okay, you are at ${displayName(r.from)}.`);
+          await rerouteFromNode(r.from.nodeId, displayName(r.from));
+          return;
+        }
         // The server already merged what it knew: what it left out (an ambiguous or unknown place) stays out.
         setPending({ from: r.from, to: r.to });
         setAgentOptions(r.options?.length ? { places: r.options, for: r.optionsFor ?? 'to' } : null);
@@ -1794,6 +1881,9 @@ export function App() {
             {tripRow('from', 'From', tripFrom, 'Where are you?')}
             {tripRow('to', 'To', tripTo, 'Where to?')}
           </section>
+          <button type="button" className="trip-locate" onClick={() => void locateMe()} disabled={thinking}>
+            <span aria-hidden="true">◎</span> {thinking ? 'Looking around…' : 'Where am I? Use the camera'}
+          </button>
 
           {!voiceFirst && (
             <div className="need-chips" role="group" aria-label="Access needs">
@@ -1978,6 +2068,15 @@ export function App() {
             <span><strong>History</strong></span>
             <button className="button button-ghost" type="button" onClick={() => { clearRecents(); announce('Recent places cleared.'); }}>Clear recent places</button>
           </div>
+          {survey?.enabled && (
+            <form className="setting-control survey" onSubmit={(event) => void captureSpot(event)}>
+              <span><strong>Survey: teach PolyGuide this spot</strong><small>Team only. Stand at a room door or landmark, type where you are, point the camera along the corridor, then capture. Only a text description is stored, never the photo. {survey.total} spots saved.</small></span>
+              <label className="survey-field"><span>Survey code</span><input type="password" autoComplete="off" value={surveyCode} onChange={(event) => { setSurveyCode(event.target.value); try { localStorage.setItem('polyguide.surveyCode', event.target.value); } catch { /* private mode */ } }} /></label>
+              <label className="survey-field"><span>Where you stand</span><input value={surveySpot} placeholder="e.g. HG F 33.2 or main entrance" autoComplete="off" onChange={(event) => setSurveySpot(event.target.value)} /></label>
+              <button className="button button-accent" type="submit" disabled={surveyBusy || !surveyCode || !surveySpot.trim()}>{surveyBusy ? 'Saving…' : 'Capture this spot'}</button>
+              {surveyMessage && <p className="survey-message" role="status">{surveyMessage}</p>}
+            </form>
+          )}
         </main>
       )}
 

@@ -11,8 +11,12 @@ import {
   type Profile,
   type RouteRequest,
   type RouteResult,
+  type RefCaptureRequest,
+  type RefCaptureResponse,
   type VisionRequest,
   type VisionResponse,
+  type WhereRequest,
+  type WhereResponse,
 } from '@polyguide/shared';
 import { mockPlaces, mockRouteWheelchair } from '@polyguide/shared/src/fixtures';
 
@@ -188,6 +192,40 @@ export const api = {
       // fall through
     }
     return { ok: false, reason: 'model_error', message: 'The voice agent is unavailable.' };
+  },
+
+  /** "Where am I?": camera + graph. Never throws. */
+  async where(request: WhereRequest): Promise<WhereResponse> {
+    try {
+      const result = await postJsonLenient<WhereResponse>(API.where, request);
+      if (result) return result;
+    } catch {
+      // fall through
+    }
+    return { ok: false, reason: 'model_error', message: UNAVAILABLE };
+  },
+
+  /** Survey mode: is capturing enabled on this server, and how many spots are in the library. */
+  async refsStatus(): Promise<{ enabled: boolean; total: number; nodes: number; byLevel: Record<string, number> } | null> {
+    try {
+      return await getJson(API.refs);
+    } catch {
+      return null;
+    }
+  },
+
+  /** Survey mode: save the spot the team member is standing at (the code is the server's SURVEY_TOKEN). */
+  async captureRef(request: RefCaptureRequest, surveyCode: string): Promise<RefCaptureResponse> {
+    try {
+      const response = await fetch(API.refs, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Survey-Token': surveyCode },
+        body: JSON.stringify(request),
+      });
+      return (await response.json()) as RefCaptureResponse;
+    } catch {
+      return { ok: false, reason: 'model_error', message: UNAVAILABLE };
+    }
   },
 
   async intent(request: IntentRequest): Promise<Intent> {
