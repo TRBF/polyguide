@@ -168,6 +168,8 @@ export interface Level {
   name: string; // "F"
   verticalOrder: number;
   facility: string; // "HG"
+  /** Floor elevation in metres (median of its graph nodes): the altimeter maps height changes to floors. */
+  elevationM?: number;
 }
 
 /* ───────────────────────────── Routing API ──────────────────────── */

@@ -135,4 +135,22 @@ describe('tracker', () => {
     expect(p.remainingTotalM).toBe(20 + 24 + 4 + 38);
     expect(run([{ type: 'stop' }], walk, s).state).toEqual(initialTrackerState);
   });
+
+  it('altitude finishes an elevator step on the right floor, and only there', () => {
+    const vi = route.steps.findIndex((st) => st.toLevelId && st.toLevelId !== st.levelId);
+    expect(vi).toBeGreaterThanOrEqual(0);
+    const target = route.steps[vi].toLevelId!;
+    const onElevator: TrackerState = { ...started, stepIndex: vi, progressM: 0, phase: 'navigating' };
+    // Wrong floor: nothing happens (the engine says so out loud instead).
+    expect(run([{ type: 'floor_reached', levelId: 'ETH.HG.K' }], walk, onElevator).state.stepIndex).toBe(vi);
+    const r = run([{ type: 'floor_reached', levelId: target }], walk, onElevator);
+    expect(r.state.stepIndex).toBe(vi + 1);
+    expect(spoken(r.effects)[0]).toMatch(new RegExp(`^You are on floor ${target.split('.').at(-1)}\. `));
+  });
+
+  it('a floor reading never moves a walking (horizontal) step', () => {
+    const r = run([{ type: 'floor_reached', levelId: route.steps[0].levelId }], walk, started);
+    expect(r.state.stepIndex).toBe(started.stepIndex);
+  });
 });
+

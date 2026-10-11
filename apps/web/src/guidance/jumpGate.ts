@@ -28,7 +28,7 @@ export interface GateCurrent {
 }
 
 export type GateDecision =
-  | { action: 'accept'; reason: 'user' | 'small_move' | 'no_estimate' | 'second_witness' | 'route_floor' | 'confirmed' }
+  | { action: 'accept'; reason: 'user' | 'small_move' | 'no_estimate' | 'second_witness' | 'route_floor' | 'altimeter' | 'confirmed' }
   | { action: 'hold'; question: string; jumpM: number; floorChange: boolean };
 
 /** Within this, one good reading may move the user (same floor). */
@@ -55,7 +55,11 @@ export class JumpGate {
    * Should this fix move the user? `routeLevels`: floors the current route legitimately reaches right now (the
    * level of the step and where its stairs/elevator lead), so a floor change the route predicts is not suspicious.
    */
-  decide(point: GatePoint, source: FixSource, current: GateCurrent | null, routeLevels: string[] = [], now = Date.now()): GateDecision {
+  /**
+   * `floorWitness`: the floor the altimeter is confident about (elevator ride, stairs, GPS altitude). A reading on
+   * that floor has its floor confirmed by an independent sensor; one on another floor does not.
+   */
+  decide(point: GatePoint, source: FixSource, current: GateCurrent | null, routeLevels: string[] = [], now = Date.now(), floorWitness: string | null = null): GateDecision {
     this.pending = this.pending.filter((p) => now - p.at < PENDING_TTL_MS);
     if (source === 'user') {
       this.pending = [];
@@ -67,6 +71,8 @@ export class JumpGate {
     const routePredictsFloor = floorChange && routeLevels.includes(point.levelId);
     if (!floorChange && jumpM <= SMALL_JUMP_M) return this.accept('small_move');
     if (routePredictsFloor && jumpM <= SMALL_JUMP_M * 2) return this.accept('route_floor');
+    // The altimeter measured the user onto this floor: the camera's floor is the second witness's floor.
+    if (floorWitness && point.levelId === floorWitness && jumpM <= SMALL_JUMP_M * 2) return this.accept('altimeter');
 
     const witness = this.pending.find((p) => p.point.levelId === point.levelId && metresBetween(p.point, point) <= AGREE_M && now - p.at >= MIN_GAP_MS);
     if (witness) return this.accept('second_witness');

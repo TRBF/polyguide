@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import {
   API,
   type AgentResponse,
@@ -28,6 +28,7 @@ import { PATTERN_LEGEND, buzz, stepPattern } from './guidance/haptics';
 import { captureFrame, holdCamera, isCameraActive, startCamera } from './guidance/camera';
 import { isVerticalStep } from './guidance/tracker';
 import { positionGate, type FixSource, type GateCurrent } from './guidance/jumpGate';
+import { altimeter } from './guidance/altimeter';
 import { requestSensorPermissions } from './sensorPermissions';
 import { RealtimeAgent, type AgentStatus, type ToolResult } from './realtime/RealtimeAgent';
 import { RealtimeDock } from './realtime/RealtimeDock';
@@ -269,6 +270,18 @@ export function App() {
   const [rtStatus, setRtStatus] = useState<AgentStatus>('off');
   const [rtMuted, setRtMuted] = useState(false);
   const [sensors] = useState(() => new LiveSensors());
+  // The floor as measured by height (elevator rides, stairs, GPS altitude): re-render when it changes.
+  const floorSensor = useSyncExternalStore(altimeter.subscribe.bind(altimeter), () => altimeter.current);
+  // Each floor's real elevation, so height changes map to floors.
+  useEffect(() => {
+    if (!started) return;
+    let cancelled = false;
+    void api.levels().then((levels) => {
+      if (cancelled) return;
+      altimeter.setLevels(levels.filter((l) => l.elevationM != null).map((l) => ({ id: l.id, elevationM: l.elevationM! })));
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [started]);
   /** While a tool runs, announcements go back to the model (it says them) instead of being spoken over it. */
   const toolSink = useRef<string[] | null>(null);
   const positionCache = useRef<{ key: string; info: PositionInfo } | null>(null);
@@ -713,8 +726,10 @@ export function App() {
     const est = currentEstimate();
     if (est.confidence === 'none') return null;
     const r = est.request;
-    if (r.lat != null && r.lon != null && r.levelId) return { lat: r.lat, lon: r.lon, levelId: r.levelId, confidence: est.confidence };
-    if (r.placeId && fix?.place.id === r.placeId) return { lat: fix.place.lat, lon: fix.place.lon, levelId: fix.place.levelId, confidence: est.confidence };
+    // Height is measured: when the altimeter is sure of the floor, it overrides the floor of a stale estimate.
+    const floor = altimeter.confidentLevel();
+    if (r.lat != null && r.lon != null && r.levelId) return { lat: r.lat, lon: r.lon, levelId: floor ?? r.levelId, confidence: est.confidence };
+    if (r.placeId && fix?.place.id === r.placeId) return { lat: fix.place.lat, lon: fix.place.lon, levelId: floor ?? fix.place.levelId, confidence: est.confidence };
     return null;
   }
 
@@ -723,7 +738,7 @@ export function App() {
     const c = gateCurrent();
     if (!c) return undefined;
     // On a route the floor is well known; a stale fix or a remembered place says little about the floor.
-    return { lat: c.lat, lon: c.lon, levelId: c.levelId, floorStrength: navigating || c.confidence === 'high' ? 'strong' : 'weak' };
+    return { lat: c.lat, lon: c.lon, levelId: c.levelId, floorStrength: navigating || c.confidence === 'high' || altimeter.confidentLevel() ? 'strong' : 'weak' };
   }
 
   /** Floors the route legitimately reaches now (its stairs or elevator lead there), so they are not suspicious. */
@@ -742,7 +757,7 @@ export function App() {
    */
   async function proposeFix(place: Place, source: FixSource): Promise<'applied' | 'held'> {
     const point = { lat: place.lat, lon: place.lon, levelId: place.levelId, label: place.name, placeId: place.id, nodeId: place.nodeId };
-    const decision = positionGate.decide(point, source, gateCurrent(), routeLevels());
+    const decision = positionGate.decide(point, source, gateCurrent(), routeLevels(), Date.now(), altimeter.confidentLevel());
     if (decision.action === 'hold') {
       heldFix.current = place;
       announce(decision.question, 'vision');
@@ -756,6 +771,8 @@ export function App() {
   /** The position is settled: walking, move the guidance there (or plan again if off the route); else it is the start. */
   async function moveUserTo(place: Place, source: Fix['source']): Promise<void> {
     setFix({ place, source, at: Date.now() });
+    // A settled position fixes the floor: the altimeter measures height changes from here.
+    altimeter.setKnown(place.levelId, source === 'photo' ? 'weak' : 'strong');
     positionCache.current = null;
     if (screen === 'navigate' && route && guidance.phase !== 'rerouting') {
       const on = guidance.locate({ lat: place.lat, lon: place.lon, levelId: place.levelId });
@@ -1639,6 +1656,7 @@ export function App() {
       gps: gps ? { lat: gps.lat, lon: gps.lon, accuracyM: gps.accuracyM, ageS: Math.round((now - gps.at) / 1000) } : null,
       needs: [...profile.needs, ...(profile.avoidStairs ? ['avoidStairs'] : [])],
       ...(vision?.sceneSummary ? { lastSeen: { summary: vision.sceneSummary, ageS: Math.round((now - lastVisionAt.current) / 1000) } } : {}),
+      floorSensor: altimeter.describe(now),
     });
   }
 
@@ -1728,7 +1746,7 @@ export function App() {
           // Two witnesses: one look may not move the user far or to another floor.
           const gate = positionGate.decide(
             { lat: place.lat, lon: place.lon, levelId: place.levelId, label: place.name, placeId: place.id, nodeId: place.nodeId },
-            evidence, gateCurrent(), routeLevels(),
+            evidence, gateCurrent(), routeLevels(), Date.now(), altimeter.confidentLevel(),
           );
           if (gate.action === 'hold') {
             heldFix.current = place;
@@ -1746,6 +1764,7 @@ export function App() {
         }
         const next: Fix = { place, source: evidence, at: Date.now(), distanceM };
         setFix(next);
+        altimeter.setKnown(place.levelId, evidence === 'photo' ? 'weak' : 'strong');
         let rerouted = false;
         let onRoute: { offM: number; stepIndex: number } | null = null;
         if (navigating && route && guidance.phase !== 'rerouting') {
@@ -2069,7 +2088,7 @@ export function App() {
           <header className="hud-top">
             <div className="hud-trip">
               <h1 id="hud-title">To {displayName(route.to)}{route.to.label && route.to.kind === 'room' ? `, ${route.to.label}` : ''}</h1>
-              <p>Step {Math.min(guidance.stepIndex + 1, route.steps.length)} of {route.steps.length}, {Math.round(guidance.remainingTotalM)} m to go</p>
+              <p>Step {Math.min(guidance.stepIndex + 1, route.steps.length)} of {route.steps.length}, {Math.round(guidance.remainingTotalM)} m to go{floorSensor.levelId && floorSensor.probability >= 0.7 ? ` · floor ${floorSensor.levelId.split('.').at(-1)}` : ''}</p>
             </div>
             <button type="button" className="hud-pill hud-pill-danger" onClick={() => void runAppCommand('emergency')}>Emergency</button>
           </header>

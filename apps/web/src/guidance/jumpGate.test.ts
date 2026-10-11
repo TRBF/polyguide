@@ -73,4 +73,12 @@ describe('JumpGate', () => {
   it('measures metres sensibly', () => {
     expect(metresBetween(here, at(40))).toBeCloseTo(40, 0);
   });
+
+  it('the altimeter confirms a floor change the camera reads', () => {
+    expect(new JumpGate().decide(at(4, 'ETH.HG.G', 'HG G 5'), 'sign', here, [], 1000, 'ETH.HG.G')).toEqual({ action: 'accept', reason: 'altimeter' });
+  });
+
+  it('…but not a floor the altimeter disagrees with', () => {
+    expect(new JumpGate().decide(at(4, 'ETH.HG.E', 'HG E 41'), 'sign', here, [], 1000, 'ETH.HG.G').action).toBe('hold');
+  });
 });

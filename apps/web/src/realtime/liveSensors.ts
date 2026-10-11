@@ -2,6 +2,7 @@
  * Compass, motion and GPS for the whole session, not only while navigating: the voice agent needs to know
  * which way the phone points while the user is still planning, lost, or turning around to look.
  */
+import { altimeter } from '../guidance/altimeter';
 import { startSensors, type SensorSnapshot } from '../guidance/sensors';
 
 export interface GpsFix {
@@ -18,10 +19,15 @@ export class LiveSensors {
   private watchId: number | null = null;
 
   start() {
-    this.stopSensors ??= startSensors({ onChange: (s) => (this.sensor = s) });
+    // Session-wide, so floor changes are measured while planning too; the guidance engine does not measure rides.
+    this.stopSensors ??= startSensors({ onChange: (s) => (this.sensor = s), onRide: (ride) => altimeter.onRide(ride) });
     if (this.watchId == null && typeof navigator !== 'undefined' && navigator.geolocation) {
       this.watchId = navigator.geolocation.watchPosition(
-        (p) => (this.gps = { lat: p.coords.latitude, lon: p.coords.longitude, accuracyM: p.coords.accuracy, at: Date.now() }),
+        (p) => {
+          this.gps = { lat: p.coords.latitude, lon: p.coords.longitude, accuracyM: p.coords.accuracy, at: Date.now() };
+          // Altitude, when the phone has it (iPhones fuse in their barometer): a height witness for the floor.
+          if (p.coords.altitude != null && p.coords.altitudeAccuracy != null) altimeter.onGpsAltitude(p.coords.altitude, p.coords.altitudeAccuracy);
+        },
         () => undefined, // denied or unavailable indoors: the agent is told "GPS: none"
         { enableHighAccuracy: true, maximumAge: 5000 },
       );

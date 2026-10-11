@@ -83,7 +83,20 @@ apiRoutes.get('/health', (c) => {
   });
 });
 
-apiRoutes.get('/levels', (c) => c.json(getGraph().levels));
+let levelsWithHeight: (ReturnType<typeof getGraph>['levels'][number] & { elevationM?: number })[] | null = null;
+apiRoutes.get('/levels', (c) => {
+  if (!levelsWithHeight) {
+    // Each floor's real elevation (median node height): the phone's altimeter turns height changes into floors.
+    const g = getGraph();
+    const heights = new Map<string, number[]>();
+    for (const n of g.nodes.values()) if (n.levelId) (heights.get(n.levelId) ?? heights.set(n.levelId, []).get(n.levelId)!).push(n.z);
+    levelsWithHeight = g.levels.map((l) => {
+      const zs = (heights.get(l.id) ?? []).sort((a, b) => a - b);
+      return zs.length ? { ...l, elevationM: +zs[Math.floor(zs.length / 2)].toFixed(2) } : l;
+    });
+  }
+  return c.json(levelsWithHeight);
+});
 
 apiRoutes.get('/places', (c) => {
   const q = (c.req.query('q') ?? '').slice(0, MAX_QUERY);

@@ -36,7 +36,9 @@ export type TrackerEvent =
   | { type: 'user_back' }
   | { type: 'repeat' }
   | { type: 'reroute'; route: Route }
-  | { type: 'reroute_failed'; message: string };
+  | { type: 'reroute_failed'; message: string }
+  /** The altimeter is confident the user is now on this floor (elevator ride, stairs or GPS altitude). */
+  | { type: 'floor_reached'; levelId: string };
 
 export type TrackerEffect =
   | { type: 'speak'; text: string; priority: SpeechPriority }
@@ -63,6 +65,7 @@ const VISION_MIN_FRACTION = 0.5;
 const SHORT_STEP_M = 10;
 
 const say = (text: string, priority: SpeechPriority = 'instruction'): TrackerEffect => ({ type: 'speak', text, priority });
+const floorName = (levelId: string) => levelId.split('.').at(-1) ?? levelId;
 const stepSpeech = (s: RouteStep) => s.speech || s.text;
 
 /** What the user will be at when this step ends, phrased for speech. */
@@ -191,6 +194,14 @@ export function reduceTracker(state: TrackerState, event: TrackerEvent, config: 
     case 'reroute': {
       if (!event.route.steps.length) return { state: { ...state, phase: 'navigating' }, effects: [say('I could not build a new route.', 'info')] };
       return enterStep(state, event.route, 0, 'New route. ');
+    }
+
+    case 'floor_reached': {
+      // Altitude finishes an elevator or stairs step by itself: no "done" needed, no camera needed.
+      if (!active(state)) return none;
+      const step = state.route!.steps[state.stepIndex];
+      if (!isVerticalStep(step) || step.toLevelId !== event.levelId) return none;
+      return enterStep(state, state.route!, state.stepIndex + 1, `You are on floor ${floorName(event.levelId)}. `);
     }
 
     case 'reroute_failed':

@@ -25,6 +25,7 @@ import {
 import { captureFrame, holdCamera, startCamera } from './camera';
 import { nextNodeAhead, pointAlong, projectOntoRoute } from './geometry';
 import { positionGate } from './jumpGate';
+import { ALTIMETER_CONFIDENT, altimeter, type AltimeterState } from './altimeter';
 import { AudioBeacon, HeadingSpeech, headingDelta } from './heading';
 import { postJson } from './net';
 import { startSensors, type SensorSnapshot } from './sensors';
@@ -87,6 +88,8 @@ export class GuidanceEngine {
   private headingSpeech = new HeadingSpeech();
   private vision: VisionController | null = null;
   private visionUnavailable = false;
+  private stopAltimeter: (() => void) | null = null;
+  private lastWrongFloorRideAt = 0;
   private lastVisionUtterance = '';
   private offHeadingSince: number | null = null;
   private lastOffHeadingVisionAt = -Infinity;
@@ -138,6 +141,8 @@ export class GuidanceEngine {
     this.visionUnavailable = false;
     this.lastVisionUtterance = '';
     this.dispatch({ type: 'start', route });
+    // The user confirmed where they start: that is the floor the altimeter measures height changes from.
+    if (route.steps[0]?.levelId) altimeter.setKnown(route.steps[0].levelId, 'strong');
     if (this.snap.tracker.phase !== 'arrived') this.startLive();
   };
 
@@ -214,6 +219,8 @@ export class GuidanceEngine {
     const p = projectOntoRoute(t.route.steps, at, t.stepIndex);
     if (!p) return null;
     if (p.offM <= LOCATE_ON_ROUTE_M) this.dispatch({ type: 'fix', routeId: t.route.routeId, stepIndex: p.stepIndex, progressM: p.alongM });
+    // A settled position (already past the two-witness gate) also fixes the floor for the altimeter.
+    altimeter.setKnown(at.levelId, 'strong');
     return { offM: p.offM, stepIndex: p.stepIndex };
   };
 
@@ -226,6 +233,8 @@ export class GuidanceEngine {
   stopLive() {
     this.stopSensors?.();
     this.stopSensors = null;
+    this.stopAltimeter?.();
+    this.stopAltimeter = null;
     if (this.ticker != null) window.clearInterval(this.ticker);
     this.ticker = null;
     this.beacon.stop();
@@ -279,13 +288,43 @@ export class GuidanceEngine {
     if (state.phase === 'arrived' && prev.phase !== 'arrived') this.stopLive();
   }
 
+  /** A footstep: progress along the step, and on stairs one riser up or down for the altimeter. */
+  private onStep() {
+    const step = trackerProgress(this.snap.tracker).currentStep;
+    if (step?.maneuver === 'take_stairs_up') altimeter.onStairStep(1);
+    else if (step?.maneuver === 'take_stairs_down') altimeter.onStairStep(-1);
+    this.dispatch({ type: 'step' });
+  }
+
+  /**
+   * The altimeter changed its mind about the floor. On an elevator or stairs step, reaching the target floor
+   * finishes the step by itself; an elevator ride that ended on another floor is said out loud at once.
+   */
+  private onFloor(s: AltimeterState) {
+    const t = this.snap.tracker;
+    const step = trackerProgress(t).currentStep;
+    if (!step || !s.levelId || s.probability < ALTIMETER_CONFIDENT || (t.phase !== 'navigating' && t.phase !== 'approaching')) return;
+    if (!isVerticalStep(step)) return;
+    if (s.levelId === step.toLevelId) {
+      this.dispatch({ type: 'floor_reached', levelId: s.levelId });
+      return;
+    }
+    const ride = s.lastRide;
+    if (s.basis === 'elevator' && ride && Date.now() - ride.at < 3000 && ride.at !== this.lastWrongFloorRideAt && s.levelId !== step.levelId && step.toLevelId) {
+      this.lastWrongFloorRideAt = ride.at;
+      const floor = (id: string) => id.split('.').at(-1);
+      this.speak(`This seems to be floor ${floor(s.levelId)}, but the route goes to floor ${floor(step.toLevelId)}. Stay in the elevator and choose floor ${floor(step.toLevelId)}.`, 'instruction');
+    }
+  }
+
   private startLive() {
     if (!this.stopSensors) {
       this.stopSensors = startSensors({
-        onStep: () => this.dispatch({ type: 'step' }),
+        onStep: () => this.onStep(),
         onChange: (s) => this.onSensor(s),
       });
     }
+    this.stopAltimeter ??= altimeter.subscribe((s) => this.onFloor(s));
     if (this.ticker == null) {
       this.lastTickAt = performance.now();
       this.ticker = window.setInterval(() => this.tick(), TICK_MS);
@@ -443,7 +482,7 @@ export class GuidanceEngine {
       }
       if (loc.place && here && levelHint) {
         const levels = [step.levelId, step.toLevelId, route.steps[t.stepIndex + 1]?.levelId].filter((l): l is string => Boolean(l));
-        const gate = positionGate.decide({ lat: loc.place.lat, lon: loc.place.lon, levelId: loc.place.levelId, label: loc.place.name, placeId: loc.place.id, nodeId: loc.nodeId }, 'sign', { ...here, levelId: levelHint, confidence: 'medium' }, levels);
+        const gate = positionGate.decide({ lat: loc.place.lat, lon: loc.place.lon, levelId: loc.place.levelId, label: loc.place.name, placeId: loc.place.id, nodeId: loc.nodeId }, 'sign', { ...here, levelId: altimeter.confidentLevel() ?? levelHint, confidence: 'medium' }, levels, Date.now(), altimeter.confidentLevel());
         // One reading may not move the user far or to another floor: ask, and keep the current route meanwhile.
         if (gate.action === 'hold') throw new Error(gate.question);
       }
