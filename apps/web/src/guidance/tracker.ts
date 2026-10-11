@@ -22,6 +22,8 @@ export interface TrackerState {
   stepIndex: number;
   /** Metres along the current step. */
   progressM: number;
+  /** Hazards of this step already warned of (or passed), in order; reset with every step. */
+  warned?: number;
 }
 
 export type TrackerEvent =
@@ -97,16 +99,71 @@ function advance(state: TrackerState, how: 'user' | 'vision' | 'auto'): TrackerR
   return enterStep(state, route, state.stepIndex + 1);
 }
 
-/** After progress changed: navigating → approaching → auto-advance. */
+/* ───── Hazards: stairs and doors are announced a few metres ahead, as an instruction (it cuts into speech) ───── */
+
+/** Stairs need time to slow down and find the handrail; a door only a few steps. */
+const STAIRS_WARN_M = 8;
+const DOOR_WARN_M = 5;
+const HAZARD_AHEAD: Partial<Record<RouteStep['maneuver'], string>> = {
+  take_stairs_down: 'Stairs going down',
+  take_stairs_up: 'Stairs going up',
+  take_escalator: 'Escalator',
+  take_ramp_down: 'Ramp going down',
+  take_ramp_up: 'Ramp going up',
+  enter_building: 'Door',
+  exit_building: 'Door',
+};
+
+interface Hazard { atM: number; warnM: number; what: string }
+
+/** What the user walks into on this step: doors along it, and stairs or a door where the next step starts. */
+function hazardsOf(route: Route, index: number): Hazard[] {
+  const step = route.steps[index];
+  const out: Hazard[] = step.expectedLandmarks
+    .filter((l) => l.kind === 'entrance')
+    .map((l) => ({ atM: l.atDistanceM, warnM: DOOR_WARN_M, what: 'Door' }));
+  const next = route.steps[index + 1];
+  const what = next && HAZARD_AHEAD[next.maneuver];
+  if (what) {
+    const door = what === 'Door';
+    // The step's own door landmark at its end is the same door.
+    if (!(door && out.some((h) => Math.abs(h.atM - step.distanceM) <= 2))) out.push({ atM: step.distanceM, warnM: door ? DOOR_WARN_M : STAIRS_WARN_M, what });
+  }
+  // One right at the start is already in the step's own instruction.
+  return out.filter((h) => h.atM > h.warnM + 2).sort((a, b) => a.atM - b.atM);
+}
+
+const metresPhrase = (m: number) => (m < 3 ? 'a few metres' : `about ${Math.max(5, Math.round(m / 5) * 5)} metres`);
+
+/** The next hazard within its warning distance, said once; ones already walked past are skipped silently. */
+function checkHazards(state: TrackerState): TrackerResult {
+  const hazards = hazardsOf(state.route!, state.stepIndex);
+  let warned = state.warned ?? 0;
+  let text: string | null = null;
+  while (warned < hazards.length && hazards[warned].atM - state.progressM <= hazards[warned].warnM) {
+    const h = hazards[warned++];
+    const left = h.atM - state.progressM;
+    text = left < -1 ? null : `${h.what} ahead, ${metresPhrase(left)}.`;
+  }
+  if (warned === (state.warned ?? 0)) return { state, effects: [] };
+  return { state: { ...state, warned }, effects: text ? [say(text, 'instruction')] : [] };
+}
+
+/** After progress changed: hazard warnings, then navigating → approaching → auto-advance. */
 function checkProgress(state: TrackerState): TrackerResult {
   const step = state.route?.steps[state.stepIndex];
   if (!step || isVerticalStep(step)) return { state, effects: [] };
+  const warn = checkHazards(state);
+  state = warn.state;
   const d = step.distanceM;
   if (state.phase === 'navigating' && (state.progressM >= APPROACH_FRACTION * d || state.progressM >= d - APPROACH_MARGIN_M)) {
-    return { state: { ...state, phase: 'approaching' }, effects: [{ type: 'requestVision', trigger: 'approaching_node' }] };
+    return { state: { ...state, phase: 'approaching' }, effects: [...warn.effects, { type: 'requestVision', trigger: 'approaching_node' }] };
   }
-  if (state.phase === 'approaching' && state.progressM >= AUTO_ADVANCE_FRACTION * d) return advance(state, 'auto');
-  return { state, effects: [] };
+  if (state.phase === 'approaching' && state.progressM >= AUTO_ADVANCE_FRACTION * d) {
+    const r = advance(state, 'auto');
+    return { state: r.state, effects: [...warn.effects, ...r.effects] };
+  }
+  return warn;
 }
 
 const active = (s: TrackerState) => (s.phase === 'navigating' || s.phase === 'approaching') && !!s.route;

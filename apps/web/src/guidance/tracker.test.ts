@@ -152,5 +152,44 @@ describe('tracker', () => {
     const r = run([{ type: 'floor_reached', levelId: route.steps[0].levelId }], walk, started);
     expect(r.state.stepIndex).toBe(started.stepIndex);
   });
+
+  describe('hazard warnings', () => {
+    // The fixture with the elevator swapped for stairs down, and a door 15 m into the first step.
+    const stairs: typeof route = {
+      ...route,
+      steps: route.steps.map((st, i) =>
+        i === 0 ? { ...st, expectedLandmarks: [...st.expectedLandmarks, { label: 'door', kind: 'entrance', side: 'ahead', atDistanceM: 15 }] }
+        : i === 2 ? { ...st, maneuver: 'take_stairs_down', text: 'Take the stairs down', speech: 'Take the stairs down.' }
+        : st),
+    };
+    const go = run([{ type: 'start', route: stairs }]).state;
+
+    it('warns of a door a few metres before it, once', () => {
+      expect(spoken(run(steps(9), walk, go).effects)).toEqual([]);
+      const at = run(steps(10), walk, go);
+      expect(spoken(at.effects)).toEqual(['Door ahead, about 5 metres.']);
+      expect(at.effects.find((e) => e.type === 'speak')).toMatchObject({ priority: 'instruction' });
+      expect(spoken(run(steps(3), walk, at.state).effects)).toEqual([]);
+    });
+
+    it('warns of stairs going down before the step that takes them, as an instruction', () => {
+      // Step 1 is 24 m and ends at the stairs: the warning comes 8 m before.
+      const onStep1 = run([{ type: 'user_next' }], walk, go).state;
+      expect(spoken(run(steps(15), walk, onStep1).effects)).toEqual([]);
+      const at = run(steps(16), walk, onStep1);
+      expect(spoken(at.effects)).toEqual(['Stairs going down ahead, about 10 metres.']);
+      expect(at.effects.find((e) => e.type === 'speak')).toMatchObject({ priority: 'instruction' });
+    });
+
+    it('says nothing for a hazard already behind the user after a jump', () => {
+      const r = run([{ type: 'fix', routeId: stairs.routeId, stepIndex: 0, progressM: 20 }], walk, go);
+      expect(spoken(r.effects)).toEqual([]);
+    });
+
+    it('an elevator is not a hazard', () => {
+      const onStep1 = run([{ type: 'user_next' }], walk, started).state;
+      expect(spoken(run(steps(20), walk, onStep1).effects).filter((t) => /ahead/.test(t))).toEqual([]);
+    });
+  });
 });
 
