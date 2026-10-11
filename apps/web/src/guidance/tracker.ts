@@ -141,7 +141,9 @@ export function reduceTracker(state: TrackerState, event: TrackerEvent, config: 
       if (event.offRouteRoom) {
         return {
           state: { ...state, phase: 'rerouting' },
-          effects: [say('Rerouting.'), { type: 'requestReroute', roomName: event.offRouteRoom }],
+          // Silent until it is real: the sign is checked first (two witnesses for a big jump), and "New route."
+          // is said when there is one. Announcing now would cry wolf on every misread sign.
+          effects: [{ type: 'requestReroute', roomName: event.offRouteRoom }],
         };
       }
       if (!event.advance) return none;

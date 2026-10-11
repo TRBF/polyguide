@@ -14,6 +14,7 @@ import {
   routeStore,
   searchPlaces,
 } from './graphStore';
+import { interpretSign, parseSign, priorFrom } from './where/signs';
 
 /** Graph ids are short (e.g. "pl_lm_137", "30.0009"); anything longer is not an id. */
 const idSchema = z.string().min(1).max(80);
@@ -40,6 +41,13 @@ const localizeSchema = z.object({
   lon: z.number().min(-180).max(180).optional(),
   accuracyM: z.number().nonnegative().optional(),
   levelHint: idSchema.optional(),
+  near: z.object({
+    nodeId: idSchema.optional(),
+    lat: z.number().min(-90).max(90).optional(),
+    lon: z.number().min(-180).max(180).optional(),
+    levelId: idSchema.optional(),
+    floorStrength: z.enum(['strong', 'weak']).optional(),
+  }).optional(),
 });
 const PLACE_KINDS = ['room', 'poi', 'entrance', 'landmark', 'seat'] as const;
 
@@ -117,7 +125,27 @@ apiRoutes.post('/route', async (c) => {
 apiRoutes.post('/localize', async (c) => {
   const parsed = localizeSchema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) return c.json({ ok: false, reason: 'no_match', message: 'invalid request' }, 400);
-  const { roomText, lat, lon, accuracyM, levelHint } = parsed.data;
+  const { roomText, lat, lon, accuracyM, levelHint, near } = parsed.data;
+
+  // A room sign (camera, or a code the user said): number = horizontal position, letter = floor, and likely
+  // misreads count, weighed against where the user probably is (see where/signs.ts).
+  if (roomText?.trim() && parseSign(roomText)) {
+    const prior = priorFrom(near ? { ...near, levelId: near.levelId ?? levelHint } : levelHint ? { levelId: levelHint } : undefined, near?.floorStrength ?? 'strong');
+    const candidates = interpretSign(roomText, prior);
+    const best = candidates[0];
+    if (best) {
+      return c.json<LocalizeResult>({
+        ok: true,
+        place: best.place,
+        nodeId: best.place.nodeId,
+        levelId: best.place.levelId,
+        confidence: best.probability,
+        method: 'room_text',
+        alternatives: candidates.slice(1).map((m) => m.place),
+        ...(best.note ? { note: best.note } : {}),
+      });
+    }
+  }
 
   if (roomText?.trim()) {
     // Text that looks like a room code ("F 33", "hg e41") must resolve to a room, never to a toilet or café.

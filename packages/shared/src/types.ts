@@ -271,6 +271,11 @@ export interface LocalizeRequest {
   lon?: number;
   accuracyM?: number;
   levelHint?: LevelId;
+  /**
+   * Where the user probably is when the text is a sign the camera read: the room NUMBER is checked against this
+   * spot and the floor LETTER against its level, so a misread ("E 33" on floor F) resolves to the real room.
+   */
+  near?: { nodeId?: NodeId; lat?: number; lon?: number; levelId?: LevelId; floorStrength?: 'strong' | 'weak' };
 }
 
 export type LocalizeResult =
@@ -283,6 +288,8 @@ export type LocalizeResult =
       method: 'room_text' | 'gps';
       /** Other plausible matches for voice disambiguation. */
       alternatives: Place[];
+      /** When the match is not the literal reading: why ("read E 33, but you are on floor F"). */
+      note?: string;
     }
   | { ok: false; reason: 'no_match' | 'gps_inaccurate' | 'indoor_gps_ignored'; message: string };
 

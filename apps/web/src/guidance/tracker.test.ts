@@ -78,7 +78,7 @@ describe('tracker', () => {
     const r = run([{ type: 'vision', advance: false, offRouteRoom: 'HG G 5', stepIndex: 0 }], walk, started);
     expect(r.state.phase).toBe('rerouting');
     expect(r.effects).toContainEqual({ type: 'requestReroute', roomName: 'HG G 5' });
-    expect(spoken(r.effects)).toEqual(['Rerouting.']);
+    expect(spoken(r.effects)).toEqual([]); // nothing said until the sign is checked and a route exists
     // further off-route results while rerouting do nothing
     expect(run([{ type: 'vision', advance: false, offRouteRoom: 'HG G 6' }], walk, r.state).effects).toEqual([]);
     const newRoute = { ...route, routeId: 'r_new', steps: route.steps.slice(3).map((s, i) => ({ ...s, index: i })) };

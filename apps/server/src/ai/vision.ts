@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { VisionRequest, VisionResponse, VisionResult } from '@polyguide/shared';
 import { getGraph, isNearRoute, matchPlaces, normRoom, routeStore } from '../graphStore';
 import { classifyError, describeError, getOpenAI, reasoningEffort, visionModel, withTimeout } from './openai';
+import { interpretSign, priorFrom } from '../where/signs';
 import { VISION_JSON_SCHEMA, VISION_SYSTEM_PROMPT, buildVisionUserText, postProcessVision } from './visionPrompt';
 
 const TIMEOUT_MS = 6000;
@@ -75,8 +76,10 @@ export function checkOffRoute(result: VisionResult, req: Pick<VisionRequest, 'ro
         known++;
         continue;
       }
-      const match = matchPlaces(name, { limit: 1, kind: 'room' })[0];
-      if (!match || match.confidence < ROOM_MATCH_MIN) continue;
+      // Read like a person would: the letter weighed against the floor the route is on, so "E 33" seen on
+      // floor F is F 33 (its twin above), not a reason to reroute to another floor.
+      const match = interpretSign(name, priorFrom({ levelId: req.step?.levelId }))[0];
+      if (!match || match.probability < ROOM_MATCH_MIN) continue;
       known++;
       // null = route/place unknown to the store; only a definite false means off-route.
       if (isNearRoute(req.routeId, match.place.id, NEAR_ROUTE_M) === false) return true;

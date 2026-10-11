@@ -5,6 +5,7 @@ import {
   type Intent,
   type IntentRequest,
   type Need,
+  type LocalizeRequest,
   type Place,
   type LocateRoomResponse,
   type PositionInfo,
@@ -26,6 +27,7 @@ import { LOCATE_ON_ROUTE_M, useGuidance } from './guidance';
 import { PATTERN_LEGEND, buzz, stepPattern } from './guidance/haptics';
 import { captureFrame, holdCamera, isCameraActive, startCamera } from './guidance/camera';
 import { isVerticalStep } from './guidance/tracker';
+import { positionGate, type FixSource, type GateCurrent } from './guidance/jumpGate';
 import { requestSensorPermissions } from './sensorPermissions';
 import { RealtimeAgent, type AgentStatus, type ToolResult } from './realtime/RealtimeAgent';
 import { RealtimeDock } from './realtime/RealtimeDock';
@@ -248,6 +250,8 @@ export function App() {
   const navToken = useRef(0);
   useEffect(() => {
     if (screen !== 'navigate') navToken.current += 1;
+    // A jump held for a second witness belongs to the walk it was seen on.
+    positionGate.clear();
   }, [screen]);
   const hapticsRef = useRef(preferences.settings.haptics);
   hapticsRef.current = preferences.settings.haptics;
@@ -676,25 +680,23 @@ export function App() {
         const seen = vision.readText.length ? ` I could read: ${vision.readText.join(', ')}.` : '';
         throw new Error(`I couldn't read a room name from that image.${seen}`);
       }
-      const localized = await api.localize({ roomText });
+      // Read like a person would: the number against where the user probably is, the letter against their floor.
+      const localized = await api.localize({ roomText, near: signNear() });
       if (!localized.ok) throw new Error(localized.message);
       let matchedPlace = localized.place;
       if (!matchedPlace) matchedPlace = (await fetchPlaces(roomText))?.[0];
-      if (matchedPlace) {
-        setOrigin(matchedPlace);
-        setFix({ place: matchedPlace, source: 'sign', at: Date.now() });
-        setOriginQuery(matchedPlace.name);
-      }
       setOriginMatches([]);
       setCameraMessage(`Room sign read as ${roomText}. Confidence ${Math.round(localized.confidence * 100)} percent.`);
-      announce(`I read ${roomText}. Your starting point is ${matchedPlace?.name ?? roomText}.`, 'vision');
-      if (screen === 'navigate' && route) {
-        // On the route: just move the guidance there. Off it: plan again from the sign.
-        const on = matchedPlace ? guidance.locate({ lat: matchedPlace.lat, lon: matchedPlace.lon, levelId: matchedPlace.levelId }) : null;
-        if (!on || on.offM > LOCATE_ON_ROUTE_M) await rerouteFromNode(localized.nodeId, roomText);
+      if (!matchedPlace) throw new Error(`I read ${roomText}, but could not place it on the map.`);
+      // A big jump from one reading is held and asked about (two witnesses); a small one applies.
+      const outcome = await proposeFix(matchedPlace, 'sign');
+      if (outcome === 'held') return;
+      if (screen === 'navigate' && route) announce(localized.note ?? `I read ${roomText}.`, 'vision');
+      else {
+        announce(`${localized.note ? `${localized.note} ` : `I read ${roomText}. `}Your starting point is ${displayName(matchedPlace)}.`, 'vision');
+        if (destination) await createRoute(destination, matchedPlace);
+        else setScreen('destination');
       }
-      else if (destination && matchedPlace) await createRoute(destination, matchedPlace);
-      else setScreen('destination');
     } catch (error) {
       const text = error instanceof Error ? error.message : 'The room sign could not be checked.';
       setCameraMessage(text);
@@ -702,6 +704,80 @@ export function App() {
     } finally {
       setCameraBusy(false);
     }
+  }
+
+  /* ───── Two witnesses for big jumps (guidance/jumpGate.ts) ───── */
+
+  /** Where the app believes the user is, as the gate and the sign model need it (null = no idea). */
+  function gateCurrent(): GateCurrent | null {
+    const est = currentEstimate();
+    if (est.confidence === 'none') return null;
+    const r = est.request;
+    if (r.lat != null && r.lon != null && r.levelId) return { lat: r.lat, lon: r.lon, levelId: r.levelId, confidence: est.confidence };
+    if (r.placeId && fix?.place.id === r.placeId) return { lat: fix.place.lat, lon: fix.place.lon, levelId: fix.place.levelId, confidence: est.confidence };
+    return null;
+  }
+
+  /** The sign model's prior for /api/localize: the number is checked against this spot, the letter against its floor. */
+  function signNear(): LocalizeRequest['near'] {
+    const c = gateCurrent();
+    if (!c) return undefined;
+    // On a route the floor is well known; a stale fix or a remembered place says little about the floor.
+    return { lat: c.lat, lon: c.lon, levelId: c.levelId, floorStrength: navigating || c.confidence === 'high' ? 'strong' : 'weak' };
+  }
+
+  /** Floors the route legitimately reaches now (its stairs or elevator lead there), so they are not suspicious. */
+  function routeLevels(): string[] {
+    if (!navigating) return [];
+    const s = guidance.currentStep;
+    return [s?.levelId, s?.toLevelId, guidance.nextStep?.levelId].filter((l): l is string => Boolean(l));
+  }
+
+  /** A held jump waiting for a second witness: the place, so "yes" can act on it. */
+  const heldFix = useRef<Place | null>(null);
+
+  /**
+   * Every position the camera produces goes through here. A small move applies at once; a big jump or another
+   * floor is held and the user is asked, until a second reading agrees or they say yes. Returns what happened.
+   */
+  async function proposeFix(place: Place, source: FixSource): Promise<'applied' | 'held'> {
+    const point = { lat: place.lat, lon: place.lon, levelId: place.levelId, label: place.name, placeId: place.id, nodeId: place.nodeId };
+    const decision = positionGate.decide(point, source, gateCurrent(), routeLevels());
+    if (decision.action === 'hold') {
+      heldFix.current = place;
+      announce(decision.question, 'vision');
+      return 'held';
+    }
+    heldFix.current = null;
+    await moveUserTo(place, source === 'user' ? 'user' : source === 'photo' ? 'photo' : 'sign');
+    return 'applied';
+  }
+
+  /** The position is settled: walking, move the guidance there (or plan again if off the route); else it is the start. */
+  async function moveUserTo(place: Place, source: Fix['source']): Promise<void> {
+    setFix({ place, source, at: Date.now() });
+    positionCache.current = null;
+    if (screen === 'navigate' && route && guidance.phase !== 'rerouting') {
+      const on = guidance.locate({ lat: place.lat, lon: place.lon, levelId: place.levelId });
+      if (!on || on.offM > LOCATE_ON_ROUTE_M) await rerouteFromNode(place.nodeId, displayName(place));
+    } else {
+      setOrigin(place);
+      setOriginQuery(place.name);
+    }
+  }
+
+  /** "Yes" to "Are you near …?": the held reading is confirmed by the user, so it applies. */
+  async function confirmHeldFix(): Promise<boolean> {
+    if (!positionGate.holding) return false;
+    const point = positionGate.confirm();
+    if (!point) return false;
+    let place = heldFix.current && heldFix.current.id === point.placeId ? heldFix.current : null;
+    if (!place && point.placeId) place = (await fetchPlaces(point.label))?.find((p) => p.id === point.placeId) ?? null;
+    heldFix.current = null;
+    if (!place) return false;
+    announce(`Okay, you are near ${displayName(place)}.`);
+    await moveUserTo(place, 'user');
+    return true;
   }
 
   async function rerouteFromNode(nodeId: string, roomText: string, token = navToken.current): Promise<void> {
@@ -782,13 +858,17 @@ export function App() {
     }
     if (r.evidence.length) setGuidanceVision(r.evidence.join(' · '));
     if (navigating) {
+      // Seen by the camera: the guidance follows (on the route) or plans again (off it), but a big jump or another
+      // floor from this one look is held and asked about first (two witnesses).
+      if (r.place && r.method !== 'route' && r.confidence >= 0.6) {
+        if (await proposeFix(r.place, r.method === 'photo' ? 'photo' : 'where') === 'held') return;
+      }
       announce(r.description, 'vision');
-      if (r.onRoute === false && r.confidence >= 0.75) await rerouteFromNode(r.nodeId, r.place ? displayName(r.place) : 'here', token);
-      // Seen on the route: the guidance moves to that point, so the instruction matches where the user is.
-      else if (r.place && r.method !== 'route' && r.confidence >= 0.75) guidance.locate({ lat: r.place.lat, lon: r.place.lon, levelId: r.place.levelId });
       return;
     }
-    // Planning: a spot found from the camera becomes the starting point (the user can still say no).
+    // Planning: a spot found from the camera becomes the starting point (the user can still say no) — unless it
+    // contradicts a confident estimate by a lot, then the gate asks first.
+    if (r.place && r.method !== 'route' && await proposeFix(r.place, r.method === 'photo' ? 'photo' : 'where') === 'held') return;
     if (r.place && r.method !== 'route') {
       const to = pendingRef.current?.to ?? destination ?? undefined;
       setPending({ from: r.place, to: to && to.id !== r.place.id ? to : undefined });
@@ -828,9 +908,10 @@ export function App() {
       }
       if (vision.offRouteSuspected && vision.detectedRoomNames[0] && wasNavigating && token === navToken.current) {
         const sign = vision.detectedRoomNames[0];
-        const localized = await api.localize({ roomText: sign });
+        const localized = await api.localize({ roomText: sign, near: signNear() });
         if (token !== navToken.current) return;
-        if (localized.ok && localized.confidence >= 0.9) await rerouteFromNode(localized.nodeId, sign, token);
+        // Off the route by one reading: the gate holds a big jump until a second witness (or the user) agrees.
+        if (localized.ok && localized.confidence >= 0.6 && localized.place) await proposeFix(localized.place, 'sign');
         else if (localized.ok) {
           // A fuzzy match could be a misread sign; ask instead of rerouting from the wrong room.
           announce(`I may have read ${sign}, but I am not sure. Say "I am at ${localized.place?.name ?? sign}" to reroute from there.`, 'vision');
@@ -1363,6 +1444,8 @@ export function App() {
         startOver();
         return;
       case 'yes':
+        // "Are you near HG F 41?" asked by the jump gate comes first: it is the most recent question.
+        if (positionGate.holding && await confirmHeldFix()) return;
         if (pendingRef.current?.from && pendingRef.current.to) await confirmPending();
         else if (screen === 'preview') beginNavigation();
         else if (screen === 'needs') setScreen('permissions');
@@ -1373,6 +1456,12 @@ export function App() {
         else announce('Okay.');
         return;
       case 'no':
+        if (positionGate.holding) {
+          positionGate.clear();
+          heldFix.current = null;
+          announce(screen === 'navigate' ? 'Okay, I will keep going by your steps.' : 'Okay. Tell me a room number near you.');
+          return;
+        }
         if (pendingRef.current) rejectPending();
         else if (screen === 'preview') { setScreen('destination'); announce('Okay. Say take me to, and another room.'); }
         else if (screen === 'permissions') setScreen('where');
@@ -1629,10 +1718,32 @@ export function App() {
         const evidence = args.evidence === 'user' ? 'user' : args.evidence === 'photo' ? 'photo' : 'sign';
         const distanceM = Number(args.distance_m) || 0;
         const levelHint = currentEstimate().request.levelId ?? fix?.place.levelId;
-        const loc = await api.localize({ roomText: text, levelHint });
+        // A sign the camera read is weighed against where the user probably is (number) and their floor (letter);
+        // the user's own words are taken as said.
+        const loc = await api.localize({ roomText: text, levelHint, ...(evidence === 'user' ? {} : { near: signNear() }) });
         if (!loc.ok) return { output: { ok: false, error: loc.message, hint: 'Look again, or ask the user for a room number.' } };
         const place = loc.place ?? (await fetchPlaces(text))?.[0];
         if (!place) return { output: { ok: false, error: `No place matches ${text}.` } };
+        if (evidence !== 'user') {
+          // Two witnesses: one look may not move the user far or to another floor.
+          const gate = positionGate.decide(
+            { lat: place.lat, lon: place.lon, levelId: place.levelId, label: place.name, placeId: place.id, nodeId: place.nodeId },
+            evidence, gateCurrent(), routeLevels(),
+          );
+          if (gate.action === 'hold') {
+            heldFix.current = place;
+            return {
+              output: {
+                ok: false,
+                held: true,
+                read_as: place.name,
+                ...(loc.note ? { note: loc.note } : {}),
+                question: gate.question,
+                advice: 'That would move the user far or to another floor on one look. Ask them this question. If they confirm, call set_position again with evidence "user"; or look again: a second reading that agrees also confirms it.',
+              },
+            };
+          }
+        }
         const next: Fix = { place, source: evidence, at: Date.now(), distanceM };
         setFix(next);
         let rerouted = false;

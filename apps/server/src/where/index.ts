@@ -10,7 +10,8 @@ import { timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { NodeId, Place, RefCaptureResponse, WhereResponse } from '@polyguide/shared';
-import { getGraph, getPlace, isNearRoute, matchPlaces } from '../graphStore';
+import { getGraph, getPlace, isNearRoute } from '../graphStore';
+import { interpretSign, priorFrom, type SignPrior } from './signs';
 import { classifyError, describeError, getOpenAI, reasoningEffort, visionModel, withTimeout } from '../ai/openai';
 import { describeSpot, placesAt, walkDistances } from './graphNear';
 import { fuse, type FuseInput } from './fuse';
@@ -94,11 +95,17 @@ function landmarkNodes(kinds: LandmarkKind[], distances: Map<NodeId, number>): F
   return out;
 }
 
-function signMatches(labels: string[], floorLevelId: string | null, minConfidence: number) {
+/**
+ * Signs → rooms through the HG sign model (signs.ts): the number checked against where the user probably is,
+ * the letter against their floor, likely misreads included. One candidate per sign: the most probable.
+ */
+function signMatches(labels: string[], prior: SignPrior | null, minProbability: number, partial = false) {
   const out: FuseInput['signs'] = [];
   for (const label of labels) {
-    const m = matchPlaces(label, { limit: 1, kind: 'room', levelId: floorLevelId ?? undefined })[0] ?? matchPlaces(label, { limit: 1, kind: 'room' })[0];
-    if (m && m.confidence >= minConfidence) out.push({ nodeId: m.place.nodeId, levelId: m.place.levelId, label: m.place.name, confidence: m.confidence });
+    const best = interpretSign(partial ? `${label}?` : label, prior)[0];
+    if (best && best.probability >= minProbability) {
+      out.push({ nodeId: best.place.nodeId, levelId: best.place.levelId, label: best.place.name, confidence: Math.min(1, best.probability * Math.exp(-0.4 * best.readingCost) + 0.15) });
+    }
   }
   return out;
 }
@@ -143,9 +150,11 @@ whereRoutes.post('/where', async (c) => {
 
   const o = obs as LocalizeObservation | null;
   const floorLevelId = o?.floorLetter ? `ETH.HG.${o.floorLetter}` : null;
+  // The sign prior: where the route puts the user, else only a floor letter seen on a stair or elevator sign.
+  const signPrior = priorNode ? priorFrom({ nodeId: priorNode.id }) : floorLevelId ? priorFrom({ levelId: floorLevelId }, 'weak') : null;
   const result = fuse({
-    signs: o ? signMatches(o.roomSigns, floorLevelId, 0.6) : [],
-    partialSigns: o ? signMatches(o.partialSigns, floorLevelId, 0.5) : [],
+    signs: o ? signMatches(o.roomSigns, signPrior, 0.35) : [],
+    partialSigns: o ? signMatches(o.partialSigns, signPrior, 0.25, true) : [],
     photos,
     landmarks: o && distances ? landmarkNodes(o.landmarks, distances) : [],
     floorLevelId: floorLevelId && g.levels.some((l) => l.id === floorLevelId) ? floorLevelId : null,
