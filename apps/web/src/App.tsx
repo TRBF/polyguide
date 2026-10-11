@@ -155,6 +155,9 @@ function listPlaceNames(places: Place[]): string {
   return places.map((place, index) => `${index + 1}, ${place.kind === 'entrance' && place.label ? place.label : place.label ? `${place.name}, ${place.label}` : place.name}`).join('; ');
 }
 
+/** After a dropped conversational voice, wait this long before the one quiet reconnect. */
+const RT_RECONNECT_MS = 1500;
+
 export function App() {
   const [preferences, setPreferences] = useState<Preferences>(() => loadPreferences());
   const [started, setStarted] = useState(false);
@@ -292,6 +295,11 @@ export function App() {
   const rtActive = rtStatus !== 'off' && rtStatus !== 'error';
   const rtConnecting = useRef(false);
   const rtFailedAt = useRef(0);
+  /** A drop already got its one quiet reconnect (cleared after the voice stays up a minute). */
+  const rtAutoRetried = useRef(false);
+  /** For the delayed reconnect: the setting may have been switched off meanwhile. */
+  const realtimeOn = useRef(false);
+  realtimeOn.current = preferences.settings.realtimeVoice;
 
   const profile = useMemo(() => ({
     ...preferences.profile,
@@ -381,6 +389,8 @@ export function App() {
     if (rtConnecting.current) return false;
     rtConnecting.current = true;
     rtRef.current?.close();
+    // The basic voice's recognizer may hold the mic (it took over after a failure): free it before asking.
+    voiceBarRef.current?.stopContinuous();
     const agent = new RealtimeAgent({
       language: profile.language === 'de' ? 'de' : 'en',
       liveState: () => liveStateRef.current(),
@@ -398,14 +408,29 @@ export function App() {
       onError: (error) => {
         rtRef.current = null;
         rtFailedAt.current = Date.now();
-        voiceBarRef.current?.startContinuous();
-        announce(`${error} Switching to the basic voice. Tap the screen to try the conversational voice again.`);
+        // Never deaf without saying so. One quiet reconnect first: most drops are a wifi blip.
+        if (rtAutoRetried.current) {
+          voiceBarRef.current?.startContinuous();
+          announce(`${error} I am not listening on the conversational voice. Switching to the basic voice. Tap the screen to try again.`, 'instruction');
+          return;
+        }
+        rtAutoRetried.current = true;
+        announce(`${error} I am not listening right now. Reconnecting.`, 'instruction');
+        window.setTimeout(() => {
+          if (rtRef.current || !realtimeOn.current) return;
+          void connectRealtime().then((ok) => {
+            if (ok) rtRef.current?.announce('I am listening again.');
+            else announce('The conversational voice did not come back. Switching to the basic voice. Tap the screen to try again.', 'instruction');
+          });
+        }, RT_RECONNECT_MS);
       },
     });
     rtRef.current = agent;
     try {
       await agent.connect();
       agent.setMuted(rtMuted);
+      // Stayed up a while: the next drop gets its own quiet reconnect again.
+      window.setTimeout(() => { if (rtRef.current === agent) rtAutoRetried.current = false; }, 60_000);
       return true;
     } catch (error) {
       if (rtRef.current === agent) rtRef.current = null;
@@ -1004,7 +1029,7 @@ export function App() {
   async function enableDevicePermissions(quiet = false): Promise<void> {
     setPermissionBusy(true);
     setPermissionMessage('Requesting device permissions…');
-    const permissions = await requestAppPermissions();
+    const permissions = await requestAppPermissions({ microphone: !preferences.settings.realtimeVoice });
     setPermissionBusy(false);
     setCameraGranted(permissions.includes('camera'));
     const granted = permissions.includes('camera') || permissions.includes('microphone');

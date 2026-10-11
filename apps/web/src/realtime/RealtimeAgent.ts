@@ -52,6 +52,26 @@ interface FunctionCallItem {
 
 const CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
 
+/** A connection "disconnected" this long has dropped (it usually heals within a few seconds). */
+const DISCONNECTED_GRACE_MS = 6000;
+
+/**
+ * The mic, retried briefly: a recognizer or permission probe that just let go of it can still hold it for a
+ * moment, and phones then fail with NotReadableError ("Could not start audio source").
+ */
+async function openMic(): Promise<MediaStream> {
+  const constraints = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } };
+  for (const waitMs of [250, 600, 1200]) {
+    try {
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (err) {
+      if (!(err instanceof DOMException && (err.name === 'NotReadableError' || err.name === 'AbortError'))) throw err;
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+  return navigator.mediaDevices.getUserMedia(constraints);
+}
+
 export class RealtimeAgent {
   private pc: RTCPeerConnection | null = null;
   private dc: RTCDataChannel | null = null;
@@ -64,6 +84,7 @@ export class RealtimeAgent {
   private seq = 0;
   private closed = false;
   private muted = false;
+  private dropTimer: number | null = null;
   private announcing: string | null = null;
   /** The model's audio is still playing (it can outlast the response by seconds). */
   private playing = false;
@@ -90,7 +111,7 @@ export class RealtimeAgent {
     audio.autoplay = true;
     audio.setAttribute('playsinline', '');
     this.audio = audio;
-    const micPromise = navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    const micPromise = openMic();
     const sessionPromise = fetch(API.realtimeSession, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ language: this.opts.language }) })
       .then((r) => r.json() as Promise<RealtimeSessionResponse>);
     try {
@@ -108,9 +129,21 @@ export class RealtimeAgent {
       // Connected without a tap (reload, setting turned on): browsers may block playback until the next one.
       for (const ev of ['pointerdown', 'touchend', 'keydown'] as const) window.addEventListener(ev, this.unlockAudio, { passive: true });
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') this.fail('The voice connection dropped.');
+        const state = pc.connectionState;
+        if (state === 'failed' || state === 'closed') this.fail('The voice connection dropped.');
+        // "disconnected" can heal by itself (a wifi blip); if it does not, the user must hear that nobody listens.
+        if (state === 'disconnected' && this.dropTimer == null) {
+          this.dropTimer = window.setTimeout(() => {
+            this.dropTimer = null;
+            if (pc.connectionState !== 'connected') this.fail('The voice connection dropped.');
+          }, DISCONNECTED_GRACE_MS);
+        }
       };
-      for (const track of mic.getAudioTracks()) pc.addTrack(track, mic);
+      for (const track of mic.getAudioTracks()) {
+        // A phone call or another app can take the mic: then nothing is heard any more.
+        track.onended = () => this.fail('The microphone stopped.');
+        pc.addTrack(track, mic);
+      }
       const dc = pc.createDataChannel('oai-events');
       this.dc = dc;
       dc.onmessage = (m) => this.onEvent(JSON.parse(String(m.data)));
@@ -141,6 +174,8 @@ export class RealtimeAgent {
 
   close() {
     this.closed = true;
+    if (this.dropTimer != null) window.clearTimeout(this.dropTimer);
+    this.dropTimer = null;
     for (const ev of ['pointerdown', 'touchend', 'keydown'] as const) window.removeEventListener(ev, this.unlockAudio);
     this.queue = [];
     this.responseActive = false;
