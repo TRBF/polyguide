@@ -41,7 +41,7 @@ const TOOLS = [
   {
     type: 'function',
     name: 'set_position',
-    description: 'Tell the app where the user really is, after you read a room sign in a photo, recognised a landmark, or the user said so. Updates the position estimate (and the route while navigating). Returns the new live state.',
+    description: 'Tell the app where the user really is, after you read a room sign in a photo, recognised a landmark, or the user said so. Your call is final: it overrides the position estimate and the floor sensor, even far away or on another floor, and moves the route while navigating. Returns the new live state.',
     parameters: {
       type: 'object',
       properties: {
@@ -172,7 +172,7 @@ Position sources, best first: a room sign you read in a photo; the user saying w
 - Inside a lecture, seminar, computer or meeting room with no door sign in view: call identify_room with the room type you see. If it is confident, call set_position. If it returns look-alikes (identical twin rooms), say which ones it could be and ask for the number on the door, or ask the user to face the door so you can read the sign.
 - If the position is unknown or low confidence and you need it (to plan a trip, or the user is lost or asks where they are): call look. If the photo shows a room sign, door number or a clear landmark, call set_position with it. If not, ask the user to turn slowly, e.g. "Please turn a quarter turn to your right and hold the phone up", then look again. Up to four looks cover a full circle. Every look tells you the compass direction it faced, so you know where each thing you saw is.
 - Room signs in HG are small plates next to doors, e.g. "F 33" or "HG F 33.1". Door numbers on the same corridor are close together; the nearby list tells you which doors should be around, so use it to check what you read.
-- If what you see contradicts the estimate (a sign for a room that is not nearby), trust the sign and call set_position.
+- If what you see or hear contradicts the estimate (a sign for a room that is not nearby or on another floor, or the user says "I'm on floor E" / "I'm by the cafeteria"), the estimate is wrong, not the sign: call set_position. The app's position and floor sensor can drift or miss an elevator ride; you are the one who decides. Never tell the user a clear sign is misread because the app thinks they are elsewhere. Only if the sign itself was blurry or partly hidden, look again first.
 - If you cannot localize after a few looks, ask the user for a room number they can feel or someone can read, or to walk to the next door.
 
 # Guiding

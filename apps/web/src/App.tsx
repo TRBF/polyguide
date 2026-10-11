@@ -1822,36 +1822,21 @@ export function App() {
         const text = String(args.place ?? '').trim();
         const evidence = args.evidence === 'user' ? 'user' : args.evidence === 'photo' ? 'photo' : 'sign';
         const distanceM = Number(args.distance_m) || 0;
-        const levelHint = currentEstimate().request.levelId ?? fix?.place.levelId;
-        // A sign the camera read is weighed against where the user probably is (number) and their floor (letter);
-        // the user's own words are taken as said.
-        const loc = await api.localize({ roomText: text, levelHint, ...(evidence === 'user' ? {} : { near: signNear() }) });
+        // The voice agent has already looked at the sign (or listened to the user) and weighed it against the live
+        // state: what it names is taken as said, even far away or on another floor. No position prior that could
+        // turn an exact "F 30.2" into its E twin, and no two-witness gate (that is for the unattended camera).
+        // A room code carries its own floor; only a bare name ("the elevator") needs the current floor to pick one.
+        const levelHint = /\d/.test(text) ? undefined : currentEstimate().request.levelId ?? fix?.place.levelId;
+        const loc = await api.localize({ roomText: text, levelHint });
         if (!loc.ok) return { output: { ok: false, error: loc.message, hint: 'Look again, or ask the user for a room number.' } };
         const place = loc.place ?? (await fetchPlaces(text))?.[0];
         if (!place) return { output: { ok: false, error: `No place matches ${text}.` } };
-        if (evidence !== 'user') {
-          // Two witnesses: one look may not move the user far or to another floor.
-          const gate = positionGate.decide(
-            { lat: place.lat, lon: place.lon, levelId: place.levelId, label: place.name, placeId: place.id, nodeId: place.nodeId },
-            evidence, gateCurrent(), routeLevels(), Date.now(), altimeter.confidentLevel(),
-          );
-          if (gate.action === 'hold') {
-            heldFix.current = place;
-            return {
-              output: {
-                ok: false,
-                held: true,
-                read_as: place.name,
-                ...(loc.note ? { note: loc.note } : {}),
-                question: gate.question,
-                advice: 'That would move the user far or to another floor on one look. Ask them this question. If they confirm, call set_position again with evidence "user"; or look again: a second reading that agrees also confirms it.',
-              },
-            };
-          }
-        }
+        positionGate.clear();
+        heldFix.current = null;
         const next: Fix = { place, source: evidence, at: Date.now(), distanceM };
         setFix(next);
-        altimeter.setKnown(place.levelId, evidence === 'photo' ? 'weak' : 'strong');
+        // The agent's floor overrides the floor sensor's belief (it may have been wrong, e.g. a missed elevator ride).
+        altimeter.setKnown(place.levelId, 'strong');
         let rerouted = false;
         let onRoute: { offM: number; stepIndex: number } | null = null;
         if (navigating && route && guidance.phase !== 'rerouting') {

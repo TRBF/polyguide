@@ -21,6 +21,13 @@ describe('interpretSign (real HG data)', () => {
     expect(interpretSign('HG F 33.2', at('pl_hg_f_30'))[0].place.name).toBe('HG F 33.2');
   });
 
+  it('a sub-room missing from the map stays on its floor and number, not a misread on another floor', () => {
+    // HG F 30.2 has a door sign but no entry in the data; F 30 / F 30.x are right there, E 38.2 is not.
+    const [best] = interpretSign('F30.2');
+    expect(best.place.levelId).toBe('ETH.HG.F');
+    expect(best.place.name).toMatch(/^HG F 30\b/);
+  });
+
   it('E/F trap: "E 33.2" read on floor F is F 33.2, and says why', () => {
     const [best] = interpretSign('E 33.2', at('pl_hg_f_30'));
     expect(best.place.name).toBe('HG F 33.2');
