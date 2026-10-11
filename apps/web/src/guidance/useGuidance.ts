@@ -23,7 +23,9 @@ import {
   type VisionTrigger,
 } from '@polyguide/shared';
 import { captureFrame, holdCamera, startCamera } from './camera';
-import { nextNodeAhead, projectOntoRoute } from './geometry';
+import { nextNodeAhead, pointAlong, projectOntoRoute } from './geometry';
+import { positionGate } from './jumpGate';
+import { ALTIMETER_CONFIDENT, altimeter, type AltimeterState } from './altimeter';
 import { AudioBeacon, HeadingSpeech, headingDelta } from './heading';
 import { postJson } from './net';
 import { startSensors, type SensorSnapshot } from './sensors';
@@ -39,7 +41,8 @@ const OFF_HEADING_COOLDOWN_MS = 10_000;
 const PERIODIC_MS = 4000;
 const PERIODIC_WITHIN_M = 20;
 const VISION_CLIENT_TIMEOUT_MS = 8000;
-const REROUTE_MIN_CONFIDENCE = 0.9;
+/** A sign's probability after the HG sign model (number, letter, misreads, prior); big jumps also face the gate. */
+const REROUTE_MIN_CONFIDENCE = 0.6;
 /** A known position this close to the route moves the tracker; farther off, the caller reroutes. */
 export const LOCATE_ON_ROUTE_M = 15;
 
@@ -85,6 +88,8 @@ export class GuidanceEngine {
   private headingSpeech = new HeadingSpeech();
   private vision: VisionController | null = null;
   private visionUnavailable = false;
+  private stopAltimeter: (() => void) | null = null;
+  private lastWrongFloorRideAt = 0;
   private lastVisionUtterance = '';
   private offHeadingSince: number | null = null;
   private lastOffHeadingVisionAt = -Infinity;
@@ -136,6 +141,8 @@ export class GuidanceEngine {
     this.visionUnavailable = false;
     this.lastVisionUtterance = '';
     this.dispatch({ type: 'start', route });
+    // The user confirmed where they start: that is the floor the altimeter measures height changes from.
+    if (route.steps[0]?.levelId) altimeter.setKnown(route.steps[0].levelId, 'strong');
     if (this.snap.tracker.phase !== 'arrived') this.startLive();
   };
 
@@ -212,6 +219,8 @@ export class GuidanceEngine {
     const p = projectOntoRoute(t.route.steps, at, t.stepIndex);
     if (!p) return null;
     if (p.offM <= LOCATE_ON_ROUTE_M) this.dispatch({ type: 'fix', routeId: t.route.routeId, stepIndex: p.stepIndex, progressM: p.alongM });
+    // A settled position (already past the two-witness gate) also fixes the floor for the altimeter.
+    altimeter.setKnown(at.levelId, 'strong');
     return { offM: p.offM, stepIndex: p.stepIndex };
   };
 
@@ -224,6 +233,8 @@ export class GuidanceEngine {
   stopLive() {
     this.stopSensors?.();
     this.stopSensors = null;
+    this.stopAltimeter?.();
+    this.stopAltimeter = null;
     if (this.ticker != null) window.clearInterval(this.ticker);
     this.ticker = null;
     this.beacon.stop();
@@ -277,13 +288,43 @@ export class GuidanceEngine {
     if (state.phase === 'arrived' && prev.phase !== 'arrived') this.stopLive();
   }
 
+  /** A footstep: progress along the step, and on stairs one riser up or down for the altimeter. */
+  private onStep() {
+    const step = trackerProgress(this.snap.tracker).currentStep;
+    if (step?.maneuver === 'take_stairs_up') altimeter.onStairStep(1);
+    else if (step?.maneuver === 'take_stairs_down') altimeter.onStairStep(-1);
+    this.dispatch({ type: 'step' });
+  }
+
+  /**
+   * The altimeter changed its mind about the floor. On an elevator or stairs step, reaching the target floor
+   * finishes the step by itself; an elevator ride that ended on another floor is said out loud at once.
+   */
+  private onFloor(s: AltimeterState) {
+    const t = this.snap.tracker;
+    const step = trackerProgress(t).currentStep;
+    if (!step || !s.levelId || s.probability < ALTIMETER_CONFIDENT || (t.phase !== 'navigating' && t.phase !== 'approaching')) return;
+    if (!isVerticalStep(step)) return;
+    if (s.levelId === step.toLevelId) {
+      this.dispatch({ type: 'floor_reached', levelId: s.levelId });
+      return;
+    }
+    const ride = s.lastRide;
+    if (s.basis === 'elevator' && ride && Date.now() - ride.at < 3000 && ride.at !== this.lastWrongFloorRideAt && s.levelId !== step.levelId && step.toLevelId) {
+      this.lastWrongFloorRideAt = ride.at;
+      const floor = (id: string) => id.split('.').at(-1);
+      this.speak(`This seems to be floor ${floor(s.levelId)}, but the route goes to floor ${floor(step.toLevelId)}. Stay in the elevator and choose floor ${floor(step.toLevelId)}.`, 'instruction');
+    }
+  }
+
   private startLive() {
     if (!this.stopSensors) {
       this.stopSensors = startSensors({
-        onStep: () => this.dispatch({ type: 'step' }),
+        onStep: () => this.onStep(),
         onChange: (s) => this.onSensor(s),
       });
     }
+    this.stopAltimeter ??= altimeter.subscribe((s) => this.onFloor(s));
     if (this.ticker == null) {
       this.lastTickAt = performance.now();
       this.ticker = window.setInterval(() => this.tick(), TICK_MS);
@@ -426,13 +467,24 @@ export class GuidanceEngine {
     const t = this.snap.tracker;
     const route = t.route;
     if (!route) return;
-    const levelHint = route.steps[t.stepIndex]?.levelId;
+    const step = route.steps[t.stepIndex];
+    const levelHint = step?.levelId;
+    // Where the tracker thinks the user is: the sign's number is checked against this spot, its letter against
+    // this floor (an "E 33" read on floor F is F 33), and a big jump needs a second witness.
+    const here = step ? pointAlong(step.polyline, t.progressM) : null;
     try {
-      const loc = await postJson<LocalizeResult>(API.localize, { roomText: roomName, levelHint }, 5000);
+      const near = here && levelHint ? { lat: here.lat, lon: here.lon, levelId: levelHint } : undefined;
+      const loc = await postJson<LocalizeResult>(API.localize, { roomText: roomName, levelHint, near }, 5000);
       if (!loc.ok) throw new Error(`I read ${roomName} but could not find it on the map.`);
-      // One camera frame can misread a digit; only reroute from a sign matched as a room with high confidence.
+      // One camera frame can misread a digit; only reroute from a sign matched as a room with good confidence.
       if (loc.confidence < REROUTE_MIN_CONFIDENCE || (loc.place && loc.place.kind !== 'room')) {
         throw new Error(`I may have read ${roomName}, but I am not sure. Say I am at, then the room, to reroute.`);
+      }
+      if (loc.place && here && levelHint) {
+        const levels = [step.levelId, step.toLevelId, route.steps[t.stepIndex + 1]?.levelId].filter((l): l is string => Boolean(l));
+        const gate = positionGate.decide({ lat: loc.place.lat, lon: loc.place.lon, levelId: loc.place.levelId, label: loc.place.name, placeId: loc.place.id, nodeId: loc.nodeId }, 'sign', { ...here, levelId: altimeter.confidentLevel() ?? levelHint, confidence: 'medium' }, levels, Date.now(), altimeter.confidentLevel());
+        // One reading may not move the user far or to another floor: ask, and keep the current route meanwhile.
+        if (gate.action === 'hold') throw new Error(gate.question);
       }
       const to = route.to.id.startsWith('node:') ? { type: 'node' as const, nodeId: route.to.nodeId } : { type: 'place' as const, placeId: route.to.id };
       const next = await postJson<RouteResult>(API.route, { from: { type: 'node', nodeId: loc.nodeId }, to, profile: this.profile }, 8000);

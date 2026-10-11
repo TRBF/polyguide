@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import {
   API,
   type AgentResponse,
   type Intent,
   type IntentRequest,
   type Need,
+  type LocalizeRequest,
+  type SettingChange,
   type Place,
   type LocateRoomResponse,
   type PositionInfo,
@@ -26,6 +28,9 @@ import { LOCATE_ON_ROUTE_M, useGuidance } from './guidance';
 import { PATTERN_LEGEND, buzz, stepPattern } from './guidance/haptics';
 import { captureFrame, holdCamera, isCameraActive, startCamera } from './guidance/camera';
 import { isVerticalStep } from './guidance/tracker';
+import { positionGate, type FixSource, type GateCurrent } from './guidance/jumpGate';
+import { altimeter } from './guidance/altimeter';
+import { applySettingChange, describeSettings, parseSettingCommand } from './voice/settingsVoice';
 import { requestSensorPermissions } from './sensorPermissions';
 import { RealtimeAgent, type AgentStatus, type ToolResult } from './realtime/RealtimeAgent';
 import { RealtimeDock } from './realtime/RealtimeDock';
@@ -52,16 +57,18 @@ const screenHelp: Record<Screen, string> = {
   permissions: 'Say enable to allow camera, motion and microphone. Say next to continue without them.',
   where: 'Say I am at, and a room, for example: I am at H G E 41. Say scan sign to read a room sign with the camera, or use GPS outdoors. If I list options, say a number.',
   destination: 'Say take me to, and a room or place, for example: take me to H G F 30, or take me to the nearest toilet. If I list options, say a number.',
-  preview: 'Say start to begin, repeat to hear the route again, or back to choose another destination.',
-  navigate: 'Say next when you have done a step, back for the previous step, repeat, where am I, what is ahead, or stop. If an elevator is not working, say: the elevator is not working.',
-  arrived: 'Say new destination, or take me to, and a room.',
-  settings: 'Say faster, slower, turn on or turn off audio beacon, or back.',
+  preview: 'Say start to begin, repeat to hear the route again, or new route to plan another one.',
+  navigate: 'Say next when you have done a step, back for the previous step, repeat, where am I, what is ahead, stop, or new route. If an elevator is not working, say: the elevator is not working.',
+  arrived: 'Say new route, or take me to, and a room.',
+  settings: 'Say speak slower or faster, turn vibration on or off, turn the direction beep on or off, bigger or smaller text, voice only mode on or off, speak German, or what are my settings. Say done to go back.',
 };
-const voiceOnlyHint = 'You can also say settings, slower, start over, or change my needs at any time. In an emergency, say emergency.';
+const voiceOnlyHint = 'At any time you can say new route, where am I, speak slower, turn off vibration, bigger text, or what are my settings. In an emergency, say emergency.';
 /** The one question the trip screen asks, in the user's own words back. */
 const ASK_TRIP = 'Where are you, and where do you want to go? For example: I am in F 7, take me to F 30.';
 /** How many choices are read out, shown and numbered: the same everywhere, so "number 3" means one thing. */
 const MAX_OPTIONS = 4;
+/** One-tap destinations: [button label, what it means when said]. */
+const QUICK_PICKS: [string, string][] = [['Toilet', 'nearest toilet'], ['Exit', 'nearest exit'], ['Elevator', 'nearest elevator'], ['Food', 'nearest food and drink']];
 const WELCOME = `Welcome to PolyGuide. ${safetyNotice} ${ASK_TRIP} If you are blind or use a wheelchair, tell me.`;
 const LOOK_HINT = 'If you do not know where you are, hold the phone up in front of you and I will look around.';
 
@@ -248,6 +255,8 @@ export function App() {
   const navToken = useRef(0);
   useEffect(() => {
     if (screen !== 'navigate') navToken.current += 1;
+    // A jump held for a second witness belongs to the walk it was seen on.
+    positionGate.clear();
   }, [screen]);
   const hapticsRef = useRef(preferences.settings.haptics);
   hapticsRef.current = preferences.settings.haptics;
@@ -265,6 +274,18 @@ export function App() {
   const [rtStatus, setRtStatus] = useState<AgentStatus>('off');
   const [rtMuted, setRtMuted] = useState(false);
   const [sensors] = useState(() => new LiveSensors());
+  // The floor as measured by height (elevator rides, stairs, GPS altitude): re-render when it changes.
+  const floorSensor = useSyncExternalStore(altimeter.subscribe.bind(altimeter), () => altimeter.current);
+  // Each floor's real elevation, so height changes map to floors.
+  useEffect(() => {
+    if (!started) return;
+    let cancelled = false;
+    void api.levels().then((levels) => {
+      if (cancelled) return;
+      altimeter.setLevels(levels.filter((l) => l.elevationM != null).map((l) => ({ id: l.id, elevationM: l.elevationM! })));
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [started]);
   /** While a tool runs, announcements go back to the model (it says them) instead of being spoken over it. */
   const toolSink = useRef<string[] | null>(null);
   const positionCache = useRef<{ key: string; info: PositionInfo } | null>(null);
@@ -503,6 +524,33 @@ export function App() {
     setPreferences(updater);
   }
 
+  /**
+   * One setting changed by voice (local parser, voice agent or realtime agent). Returns what to say; with
+   * `speak`, says it too. Turning the app voice off says the confirmation first, then goes quiet.
+   */
+  function applyVoiceSetting(change: SettingChange, speak = true): string {
+    const preview = applySettingChange(preferences, change);
+    if (!preview) return 'I cannot change that setting.';
+    const apply = () => updatePreferences((current) => applySettingChange(current, change)?.prefs ?? current);
+    if (preview.sayFirst && speak) {
+      announce(preview.say);
+      let done = false;
+      let off: () => void = () => undefined;
+      const later = () => {
+        if (done) return;
+        done = true;
+        off();
+        apply();
+      };
+      off = onSpeakingChange((speaking) => { if (!speaking) later(); });
+      window.setTimeout(later, 8000);
+      return preview.say;
+    }
+    apply();
+    if (speak) announce(preview.say);
+    return preview.say;
+  }
+
   function setNeedState(need: Need, enabled: boolean): void {
     updatePreferences((current) => {
       const nextNeeds = enabled
@@ -676,25 +724,23 @@ export function App() {
         const seen = vision.readText.length ? ` I could read: ${vision.readText.join(', ')}.` : '';
         throw new Error(`I couldn't read a room name from that image.${seen}`);
       }
-      const localized = await api.localize({ roomText });
+      // Read like a person would: the number against where the user probably is, the letter against their floor.
+      const localized = await api.localize({ roomText, near: signNear() });
       if (!localized.ok) throw new Error(localized.message);
       let matchedPlace = localized.place;
       if (!matchedPlace) matchedPlace = (await fetchPlaces(roomText))?.[0];
-      if (matchedPlace) {
-        setOrigin(matchedPlace);
-        setFix({ place: matchedPlace, source: 'sign', at: Date.now() });
-        setOriginQuery(matchedPlace.name);
-      }
       setOriginMatches([]);
       setCameraMessage(`Room sign read as ${roomText}. Confidence ${Math.round(localized.confidence * 100)} percent.`);
-      announce(`I read ${roomText}. Your starting point is ${matchedPlace?.name ?? roomText}.`, 'vision');
-      if (screen === 'navigate' && route) {
-        // On the route: just move the guidance there. Off it: plan again from the sign.
-        const on = matchedPlace ? guidance.locate({ lat: matchedPlace.lat, lon: matchedPlace.lon, levelId: matchedPlace.levelId }) : null;
-        if (!on || on.offM > LOCATE_ON_ROUTE_M) await rerouteFromNode(localized.nodeId, roomText);
+      if (!matchedPlace) throw new Error(`I read ${roomText}, but could not place it on the map.`);
+      // A big jump from one reading is held and asked about (two witnesses); a small one applies.
+      const outcome = await proposeFix(matchedPlace, 'sign');
+      if (outcome === 'held') return;
+      if (screen === 'navigate' && route) announce(localized.note ?? `I read ${roomText}.`, 'vision');
+      else {
+        announce(`${localized.note ? `${localized.note} ` : `I read ${roomText}. `}Your starting point is ${displayName(matchedPlace)}.`, 'vision');
+        if (destination) await createRoute(destination, matchedPlace);
+        else setScreen('destination');
       }
-      else if (destination && matchedPlace) await createRoute(destination, matchedPlace);
-      else setScreen('destination');
     } catch (error) {
       const text = error instanceof Error ? error.message : 'The room sign could not be checked.';
       setCameraMessage(text);
@@ -702,6 +748,84 @@ export function App() {
     } finally {
       setCameraBusy(false);
     }
+  }
+
+  /* ───── Two witnesses for big jumps (guidance/jumpGate.ts) ───── */
+
+  /** Where the app believes the user is, as the gate and the sign model need it (null = no idea). */
+  function gateCurrent(): GateCurrent | null {
+    const est = currentEstimate();
+    if (est.confidence === 'none') return null;
+    const r = est.request;
+    // Height is measured: when the altimeter is sure of the floor, it overrides the floor of a stale estimate.
+    const floor = altimeter.confidentLevel();
+    if (r.lat != null && r.lon != null && r.levelId) return { lat: r.lat, lon: r.lon, levelId: floor ?? r.levelId, confidence: est.confidence };
+    if (r.placeId && fix?.place.id === r.placeId) return { lat: fix.place.lat, lon: fix.place.lon, levelId: floor ?? fix.place.levelId, confidence: est.confidence };
+    return null;
+  }
+
+  /** The sign model's prior for /api/localize: the number is checked against this spot, the letter against its floor. */
+  function signNear(): LocalizeRequest['near'] {
+    const c = gateCurrent();
+    if (!c) return undefined;
+    // On a route the floor is well known; a stale fix or a remembered place says little about the floor.
+    return { lat: c.lat, lon: c.lon, levelId: c.levelId, floorStrength: navigating || c.confidence === 'high' || altimeter.confidentLevel() ? 'strong' : 'weak' };
+  }
+
+  /** Floors the route legitimately reaches now (its stairs or elevator lead there), so they are not suspicious. */
+  function routeLevels(): string[] {
+    if (!navigating) return [];
+    const s = guidance.currentStep;
+    return [s?.levelId, s?.toLevelId, guidance.nextStep?.levelId].filter((l): l is string => Boolean(l));
+  }
+
+  /** A held jump waiting for a second witness: the place, so "yes" can act on it. */
+  const heldFix = useRef<Place | null>(null);
+
+  /**
+   * Every position the camera produces goes through here. A small move applies at once; a big jump or another
+   * floor is held and the user is asked, until a second reading agrees or they say yes. Returns what happened.
+   */
+  async function proposeFix(place: Place, source: FixSource): Promise<'applied' | 'held'> {
+    const point = { lat: place.lat, lon: place.lon, levelId: place.levelId, label: place.name, placeId: place.id, nodeId: place.nodeId };
+    const decision = positionGate.decide(point, source, gateCurrent(), routeLevels(), Date.now(), altimeter.confidentLevel());
+    if (decision.action === 'hold') {
+      heldFix.current = place;
+      announce(decision.question, 'vision');
+      return 'held';
+    }
+    heldFix.current = null;
+    await moveUserTo(place, source === 'user' ? 'user' : source === 'photo' ? 'photo' : 'sign');
+    return 'applied';
+  }
+
+  /** The position is settled: walking, move the guidance there (or plan again if off the route); else it is the start. */
+  async function moveUserTo(place: Place, source: Fix['source']): Promise<void> {
+    setFix({ place, source, at: Date.now() });
+    // A settled position fixes the floor: the altimeter measures height changes from here.
+    altimeter.setKnown(place.levelId, source === 'photo' ? 'weak' : 'strong');
+    positionCache.current = null;
+    if (screen === 'navigate' && route && guidance.phase !== 'rerouting') {
+      const on = guidance.locate({ lat: place.lat, lon: place.lon, levelId: place.levelId });
+      if (!on || on.offM > LOCATE_ON_ROUTE_M) await rerouteFromNode(place.nodeId, displayName(place));
+    } else {
+      setOrigin(place);
+      setOriginQuery(place.name);
+    }
+  }
+
+  /** "Yes" to "Are you near …?": the held reading is confirmed by the user, so it applies. */
+  async function confirmHeldFix(): Promise<boolean> {
+    if (!positionGate.holding) return false;
+    const point = positionGate.confirm();
+    if (!point) return false;
+    let place = heldFix.current && heldFix.current.id === point.placeId ? heldFix.current : null;
+    if (!place && point.placeId) place = (await fetchPlaces(point.label))?.find((p) => p.id === point.placeId) ?? null;
+    heldFix.current = null;
+    if (!place) return false;
+    announce(`Okay, you are near ${displayName(place)}.`);
+    await moveUserTo(place, 'user');
+    return true;
   }
 
   async function rerouteFromNode(nodeId: string, roomText: string, token = navToken.current): Promise<void> {
@@ -782,13 +906,17 @@ export function App() {
     }
     if (r.evidence.length) setGuidanceVision(r.evidence.join(' · '));
     if (navigating) {
+      // Seen by the camera: the guidance follows (on the route) or plans again (off it), but a big jump or another
+      // floor from this one look is held and asked about first (two witnesses).
+      if (r.place && r.method !== 'route' && r.confidence >= 0.6) {
+        if (await proposeFix(r.place, r.method === 'photo' ? 'photo' : 'where') === 'held') return;
+      }
       announce(r.description, 'vision');
-      if (r.onRoute === false && r.confidence >= 0.75) await rerouteFromNode(r.nodeId, r.place ? displayName(r.place) : 'here', token);
-      // Seen on the route: the guidance moves to that point, so the instruction matches where the user is.
-      else if (r.place && r.method !== 'route' && r.confidence >= 0.75) guidance.locate({ lat: r.place.lat, lon: r.place.lon, levelId: r.place.levelId });
       return;
     }
-    // Planning: a spot found from the camera becomes the starting point (the user can still say no).
+    // Planning: a spot found from the camera becomes the starting point (the user can still say no) — unless it
+    // contradicts a confident estimate by a lot, then the gate asks first.
+    if (r.place && r.method !== 'route' && await proposeFix(r.place, r.method === 'photo' ? 'photo' : 'where') === 'held') return;
     if (r.place && r.method !== 'route') {
       const to = pendingRef.current?.to ?? destination ?? undefined;
       setPending({ from: r.place, to: to && to.id !== r.place.id ? to : undefined });
@@ -828,9 +956,10 @@ export function App() {
       }
       if (vision.offRouteSuspected && vision.detectedRoomNames[0] && wasNavigating && token === navToken.current) {
         const sign = vision.detectedRoomNames[0];
-        const localized = await api.localize({ roomText: sign });
+        const localized = await api.localize({ roomText: sign, near: signNear() });
         if (token !== navToken.current) return;
-        if (localized.ok && localized.confidence >= 0.9) await rerouteFromNode(localized.nodeId, sign, token);
+        // Off the route by one reading: the gate holds a big jump until a second witness (or the user) agrees.
+        if (localized.ok && localized.confidence >= 0.6 && localized.place) await proposeFix(localized.place, 'sign');
         else if (localized.ok) {
           // A fuzzy match could be a misread sign; ask instead of rerouting from the wrong room.
           announce(`I may have read ${sign}, but I am not sure. Say "I am at ${localized.place?.name ?? sign}" to reroute from there.`, 'vision');
@@ -1150,6 +1279,14 @@ export function App() {
       openSettings();
       return;
     }
+    // Settings by voice alone, instantly and offline: "speak slower", "turn off vibration", "bigger text"…
+    const settingCommand = parseSettingCommand(said);
+    if (settingCommand) {
+      misunderstood.current = 0;
+      if (settingCommand === 'read') announce(describeSettings(preferences));
+      else applyVoiceSetting(settingCommand);
+      return;
+    }
     // Walking: step commands never wait for the network. "Where am I?" goes straight to the camera anywhere.
     const quick = parseCommand(said);
     if (quick?.type === 'where_am_i') {
@@ -1245,12 +1382,16 @@ export function App() {
         await runAppCommand('elevator_broken');
         return;
       case 'slower':
-      case 'faster': {
-        const step = r.action === 'slower' ? -0.1 : 0.1;
-        updatePreferences((current) => ({ ...current, settings: { ...current.settings, speechRate: Math.min(1.5, Math.max(0.6, +(current.settings.speechRate + step).toFixed(2))) } }));
-        announce(r.action === 'slower' ? 'Speaking slower.' : 'Speaking faster.');
+      case 'faster':
+        applyVoiceSetting({ setting: 'speech_rate', value: r.action === 'slower' ? 'down' : 'up' });
         return;
-      }
+      case 'set_setting':
+        if (r.setting) applyVoiceSetting(r.setting);
+        else announce(r.reply || 'Which setting? For example: speak slower, or turn off vibration.');
+        return;
+      case 'start_over':
+        startOver();
+        return;
       case 'settings':
         openSettings();
         return;
@@ -1363,6 +1504,8 @@ export function App() {
         startOver();
         return;
       case 'yes':
+        // "Are you near HG F 41?" asked by the jump gate comes first: it is the most recent question.
+        if (positionGate.holding && await confirmHeldFix()) return;
         if (pendingRef.current?.from && pendingRef.current.to) await confirmPending();
         else if (screen === 'preview') beginNavigation();
         else if (screen === 'needs') setScreen('permissions');
@@ -1373,6 +1516,12 @@ export function App() {
         else announce('Okay.');
         return;
       case 'no':
+        if (positionGate.holding) {
+          positionGate.clear();
+          heldFix.current = null;
+          announce(screen === 'navigate' ? 'Okay, I will keep going by your steps.' : 'Okay. Tell me a room number near you.');
+          return;
+        }
         if (pendingRef.current) rejectPending();
         else if (screen === 'preview') { setScreen('destination'); announce('Okay. Say take me to, and another room.'); }
         else if (screen === 'permissions') setScreen('where');
@@ -1423,22 +1572,66 @@ export function App() {
     } else announce(`Okay, avoiding that elevator. ${routeSummary(result)}`);
   }
 
-  function startOver(): void {
+  /** Swap From and To ("take me back"): a new proposal to confirm with one yes. */
+  function swapTrip(): void {
+    const from = pendingRef.current?.from ?? origin ?? undefined;
+    const to = pendingRef.current?.to ?? destination ?? route?.to ?? undefined;
+    if (!from && !to) return;
+    if (route) {
+      guidance.stop();
+      setRoute(null);
+    }
+    setDestination(null);
+    setAgentOptions(null);
+    setPending({ from: to, to: from });
+    setScreen('where');
+    if (from && to) announce(`From ${displayName(to)} to ${displayName(from)}. Is that right?`);
+    else announce(to ? `You are at ${displayName(to)}. Where do you want to go?` : `Going to ${displayName(from!)}. Where are you now?`);
+  }
+
+  /** One tap for the trips people make most: the same path as saying it, so the agent resolves "nearest". */
+  function quickPick(spoken: string): void {
+    void dispatchCommand(`take me to the ${spoken}`);
+  }
+
+  /** A recent destination: no network needed to propose it. */
+  function pickRecent(place: Place): void {
+    const from = pendingRef.current?.from ?? origin ?? undefined;
+    setAgentOptions(null);
+    setPending({ from, to: place });
+    announce(from ? `From ${displayName(from)} to ${displayName(place)}. Is that right?` : `Going to ${displayName(place)}. Where are you now?`);
+  }
+
+  /**
+   * A new trip from scratch: guidance stops and the destination clears, but where the user is stays the start
+   * (the place they arrived at, or a recent sign/word fix), so "new route" is one sentence away from walking.
+   */
+  function startOver(speakIt = true): void {
+    const fixAgeMs = fix ? Date.now() - fix.at : Infinity;
+    // Arrived: the destination. Walking: only a fresh fix (the start of the route is behind them). Planning: they
+    // have not moved, so the start they stated still holds.
+    const here = screen === 'arrived' && route ? route.to
+      : screen === 'navigate' ? (fix && fixAgeMs < 2 * 60_000 ? fix.place : null)
+      : (fix && fixAgeMs < 10 * 60_000 ? fix.place : null) ?? pendingRef.current?.from ?? origin ?? null;
     guidance.stop();
     releaseScreenWakeLock();
+    positionGate.clear();
     setRoute(null);
     setDestination(null);
     setDestinationQuery('');
     setDestinationMatches([]);
-    setOrigin(null);
-    setOriginQuery('');
+    setOrigin(here);
+    setOriginQuery(here?.name ?? '');
     setOriginMatches([]);
     setAvoidElevators([]);
     setPending(null);
     setAgentOptions(null);
     setHeard('');
+    setEditing(null);
     setScreen('where');
-    announce(`Starting over. ${ASK_TRIP}`);
+    const say = here ? `New route. You are at ${displayName(here)}. Where do you want to go?` : `Starting over. ${ASK_TRIP}`;
+    if (speakIt) announce(say);
+    else setMessage(say);
   }
 
   function beginNavigation(next: Route | null = route): void {
@@ -1550,6 +1743,7 @@ export function App() {
       gps: gps ? { lat: gps.lat, lon: gps.lon, accuracyM: gps.accuracyM, ageS: Math.round((now - gps.at) / 1000) } : null,
       needs: [...profile.needs, ...(profile.avoidStairs ? ['avoidStairs'] : [])],
       ...(vision?.sceneSummary ? { lastSeen: { summary: vision.sceneSummary, ageS: Math.round((now - lastVisionAt.current) / 1000) } } : {}),
+      floorSensor: altimeter.describe(now),
     });
   }
 
@@ -1629,12 +1823,35 @@ export function App() {
         const evidence = args.evidence === 'user' ? 'user' : args.evidence === 'photo' ? 'photo' : 'sign';
         const distanceM = Number(args.distance_m) || 0;
         const levelHint = currentEstimate().request.levelId ?? fix?.place.levelId;
-        const loc = await api.localize({ roomText: text, levelHint });
+        // A sign the camera read is weighed against where the user probably is (number) and their floor (letter);
+        // the user's own words are taken as said.
+        const loc = await api.localize({ roomText: text, levelHint, ...(evidence === 'user' ? {} : { near: signNear() }) });
         if (!loc.ok) return { output: { ok: false, error: loc.message, hint: 'Look again, or ask the user for a room number.' } };
         const place = loc.place ?? (await fetchPlaces(text))?.[0];
         if (!place) return { output: { ok: false, error: `No place matches ${text}.` } };
+        if (evidence !== 'user') {
+          // Two witnesses: one look may not move the user far or to another floor.
+          const gate = positionGate.decide(
+            { lat: place.lat, lon: place.lon, levelId: place.levelId, label: place.name, placeId: place.id, nodeId: place.nodeId },
+            evidence, gateCurrent(), routeLevels(), Date.now(), altimeter.confidentLevel(),
+          );
+          if (gate.action === 'hold') {
+            heldFix.current = place;
+            return {
+              output: {
+                ok: false,
+                held: true,
+                read_as: place.name,
+                ...(loc.note ? { note: loc.note } : {}),
+                question: gate.question,
+                advice: 'That would move the user far or to another floor on one look. Ask them this question. If they confirm, call set_position again with evidence "user"; or look again: a second reading that agrees also confirms it.',
+              },
+            };
+          }
+        }
         const next: Fix = { place, source: evidence, at: Date.now(), distanceM };
         setFix(next);
+        altimeter.setKnown(place.levelId, evidence === 'photo' ? 'weak' : 'strong');
         let rerouted = false;
         let onRoute: { offM: number; stepIndex: number } | null = null;
         if (navigating && route && guidance.phase !== 'rerouting') {
@@ -1738,6 +1955,20 @@ export function App() {
         return { output: { ok: true, note: 'Routes planned from now on use these needs.' } };
       }
 
+      case 'settings': {
+        if (args.action === 'read') return { output: { ok: true, say: describeSettings(preferences) } };
+        const change = { setting: args.setting, value: args.value } as SettingChange;
+        const preview = applySettingChange(preferences, change);
+        if (!preview) return { output: { ok: false, error: 'Not a setting that can be changed that way.', hint: 'Ask which setting they mean.' } };
+        // The model speaks the confirmation itself; the app's own voice stays out of it.
+        applyVoiceSetting(change, false);
+        return { output: { ok: true, say: preview.say } };
+      }
+
+      case 'start_over':
+        startOver(false);
+        return { output: { ok: true, start: fix?.place.name ?? null, note: 'Trip cleared; guidance stopped. Ask where they want to go.' } };
+
       case 'report_elevator_broken':
         await reportElevatorOutOfService();
         return { output: { ok: true } };
@@ -1816,6 +2047,8 @@ export function App() {
   runToolRef.current = runTool;
 
   const voiceFirst = preferences.settings.voiceFirst;
+  // Recent destinations (not where the user is now); read on render so a new trip shows up at once.
+  const recentDestinations = recentPlaces('destination').filter((p) => p.id !== (pending?.from ?? origin)?.id);
   const tripFrom = pending?.from ?? origin ?? null;
   const tripTo = pending?.to ?? destination ?? (route ? route.to : null);
   const confirming = Boolean(pending?.from && pending?.to);
@@ -1896,12 +2129,40 @@ export function App() {
             {tripRow('from', 'From', tripFrom, 'Where are you?')}
             {tripRow('to', 'To', tripTo, 'Where to?')}
           </section>
-          <button type="button" className="trip-locate" onClick={() => void locateMe()} disabled={thinking}>
-            <span aria-hidden="true">◎</span> {thinking ? 'Looking around…' : 'Where am I? Use the camera'}
-          </button>
+          <div className="trip-tools" role="group" aria-label="Trip tools">
+            <button type="button" className="trip-tool trip-tool-locate" onClick={() => void locateMe()} disabled={thinking}>
+              <span aria-hidden="true">◎</span> {thinking ? 'Looking…' : 'Where am I?'}
+            </button>
+            {(tripFrom || tripTo) && (
+              <button type="button" className="trip-tool" onClick={swapTrip} aria-label="Swap start and destination">
+                <span aria-hidden="true">⇅</span> Swap
+              </button>
+            )}
+            {(tripFrom || tripTo || route) && (
+              <button type="button" className="trip-tool" onClick={() => startOver()} aria-label="New route: clear the destination, keep where I am">
+                <span aria-hidden="true">↺</span> New route
+              </button>
+            )}
+          </div>
+
+          {/* The trips people make most, one tap each, while there is no destination yet. */}
+          {!tripTo && !confirming && !thinking && optionList.length === 0 && (
+            <div className="quick-picks" role="group" aria-label="Quick destinations">
+              <span className="row-label" aria-hidden="true">Go to</span>
+              {recentDestinations.slice(0, 2).map((place) => (
+                <button key={place.id} type="button" className="chip chip-recent" onClick={() => pickRecent(place)}>
+                  <span aria-hidden="true">↻ </span>{displayName(place)}
+                </button>
+              ))}
+              {QUICK_PICKS.map(([label, spoken]) => (
+                <button key={label} type="button" className="chip" onClick={() => quickPick(spoken)}>{label}</button>
+              ))}
+            </div>
+          )}
 
           {!voiceFirst && (
             <div className="need-chips" role="group" aria-label="Access needs">
+              <span className="row-label" aria-hidden="true">Needs</span>
               {needChips.map(([need, label]) => (
                 <button key={need} type="button" className="chip" aria-pressed={needOn(need)} onClick={() => toggleNeed(need)}>{label}</button>
               ))}
@@ -1958,7 +2219,7 @@ export function App() {
           <header className="hud-top">
             <div className="hud-trip">
               <h1 id="hud-title">To {displayName(route.to)}{route.to.label && route.to.kind === 'room' ? `, ${route.to.label}` : ''}</h1>
-              <p>Step {Math.min(guidance.stepIndex + 1, route.steps.length)} of {route.steps.length}, {Math.round(guidance.remainingTotalM)} m to go</p>
+              <p>Step {Math.min(guidance.stepIndex + 1, route.steps.length)} of {route.steps.length}, {Math.round(guidance.remainingTotalM)} m to go{floorSensor.levelId && floorSensor.probability >= 0.7 ? ` · floor ${floorSensor.levelId.split('.').at(-1)}` : ''}</p>
             </div>
             <button type="button" className="hud-pill hud-pill-danger" onClick={() => void runAppCommand('emergency')}>Emergency</button>
           </header>
@@ -2045,6 +2306,7 @@ export function App() {
             <h1 id="settings-title">Settings</h1>
             <button className="button button-accent" type="button" onClick={moveBack}>Done</button>
           </div>
+          <p className="settings-voice-hint"><strong>All of these work by voice too.</strong> Say, for example: speak slower, turn off vibration, bigger text, voice only mode, speak German, or what are my settings.</p>
           <div className="setting-control">
             <span><strong>Your needs</strong><small>Routes adapt to them</small></span>
             <div className="need-chips" role="group" aria-label="Access needs">

@@ -168,6 +168,8 @@ export interface Level {
   name: string; // "F"
   verticalOrder: number;
   facility: string; // "HG"
+  /** Floor elevation in metres (median of its graph nodes): the altimeter maps height changes to floors. */
+  elevationM?: number;
 }
 
 /* ───────────────────────────── Routing API ──────────────────────── */
@@ -271,6 +273,11 @@ export interface LocalizeRequest {
   lon?: number;
   accuracyM?: number;
   levelHint?: LevelId;
+  /**
+   * Where the user probably is when the text is a sign the camera read: the room NUMBER is checked against this
+   * spot and the floor LETTER against its level, so a misread ("E 33" on floor F) resolves to the real room.
+   */
+  near?: { nodeId?: NodeId; lat?: number; lon?: number; levelId?: LevelId; floorStrength?: 'strong' | 'weak' };
 }
 
 export type LocalizeResult =
@@ -283,6 +290,8 @@ export type LocalizeResult =
       method: 'room_text' | 'gps';
       /** Other plausible matches for voice disambiguation. */
       alternatives: Place[];
+      /** When the match is not the literal reading: why ("read E 33, but you are on floor F"). */
+      note?: string;
     }
   | { ok: false; reason: 'no_match' | 'gps_inaccurate' | 'indoor_gps_ignored'; message: string };
 
@@ -371,6 +380,8 @@ export type AgentAction =
   | 'where_am_i' | 'whats_ahead'
   | 'emergency' | 'elevator_broken'
   | 'slower' | 'faster' | 'settings' | 'help'
+  | 'set_setting' // "turn off vibration", "bigger text", "speak German": change one setting by voice
+  | 'start_over' // "new route", "let's plan something else": clear the trip, keep where the user is
   | 'none'; // small talk, or nothing to do: just speak the reply
 
 export interface AgentContext {
@@ -408,6 +419,8 @@ export type AgentResponse =
       optionsFor?: 'from' | 'to';
       option?: number;
       needs?: { add: (Need | 'avoidStairs')[]; remove: (Need | 'avoidStairs')[] };
+      /** set_setting: the one setting to change. */
+      setting?: import('./voiceSettings').SettingChange;
       latencyMs: number;
     }
   | { ok: false; reason: 'disabled' | 'timeout' | 'model_error' | 'rate_limited' | 'invalid_request'; message: string };

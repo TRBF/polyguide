@@ -4,6 +4,8 @@
  * wires them to the browser events.
  */
 
+import { RideDetector, type Ride } from './altimeter';
+
 /* ───────────── Angle helpers ───────────── */
 
 export const norm360 = (d: number) => ((d % 360) + 360) % 360;
@@ -190,6 +192,8 @@ export interface SensorSnapshot {
 
 export interface SensorListener {
   onStep?: (count: number) => void;
+  /** An elevator ride just ended (height measured from the accelerometer). Only measured when asked for. */
+  onRide?: (ride: Ride) => void;
   /** Throttled to ~10 Hz. */
   onChange?: (s: SensorSnapshot) => void;
 }
@@ -207,6 +211,8 @@ export function startSensors(listener: SensorListener): () => void {
   const heading = new HeadingFilter();
   const steps = new StepDetector();
   const motion = new MotionDetector();
+  const rides = listener.onRide ? new RideDetector() : null;
+  let lastStepAt = -Infinity;
   const snap: SensorSnapshot = {
     headingDeg: null,
     headingReliable: false,
@@ -259,7 +265,14 @@ export function startSensors(listener: SensorListener): () => void {
     snap.accelMag = mag;
     motion.push(now, mag);
     snap.accelVariance = motion.variance;
-    if (steps.push(now, mag)) {
+    const stepped = steps.push(now, mag);
+    if (stepped) lastStepAt = now;
+    if (rides) {
+      // Walking shakes the phone far more than an elevator accelerates it: rides are measured standing still.
+      const ride = rides.push(now, mag, now - lastStepAt < 1500);
+      if (ride) listener.onRide?.(ride);
+    }
+    if (stepped) {
       snap.steps = steps.count;
       listener.onStep?.(steps.count);
       emit(true);
