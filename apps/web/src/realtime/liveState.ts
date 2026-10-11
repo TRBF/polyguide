@@ -3,51 +3,12 @@
  * the user is and which way they face, in plain words. Pure functions so they can be unit-tested.
  */
 import { useTypeLabel, type Place, type PositionInfo, type RouteStep } from '@polyguide/shared';
+import { bearingAt, norm360, pointAlong } from '../guidance/geometry';
 
 /* ───────────── Geometry ───────────── */
 
-const M_PER_DEG_LAT = 110540;
-const M_PER_DEG_LON = (lat: number) => 111320 * Math.cos((lat * Math.PI) / 180);
+export { bearingAt, norm360, pointAlong };
 
-/** Point `distM` along a [lon, lat] polyline (clamped to its ends). */
-export function pointAlong(polyline: [number, number][], distM: number): { lat: number; lon: number } | null {
-  if (!polyline.length) return null;
-  let left = Math.max(0, distM);
-  for (let i = 1; i < polyline.length; i++) {
-    const [lon0, lat0] = polyline[i - 1];
-    const [lon1, lat1] = polyline[i];
-    const kx = M_PER_DEG_LON(lat0);
-    const seg = Math.hypot((lon1 - lon0) * kx, (lat1 - lat0) * M_PER_DEG_LAT);
-    if (seg >= left && seg > 0) {
-      const t = left / seg;
-      return { lon: lon0 + (lon1 - lon0) * t, lat: lat0 + (lat1 - lat0) * t };
-    }
-    left -= seg;
-  }
-  const [lon, lat] = polyline[polyline.length - 1];
-  return { lat, lon };
-}
-
-/** Compass bearing of the polyline segment `distM` along it (the way the route goes from there). */
-export function bearingAt(polyline: [number, number][], distM: number): number | null {
-  let left = Math.max(0, distM);
-  let last: number | null = null;
-  for (let i = 1; i < polyline.length; i++) {
-    const [lon0, lat0] = polyline[i - 1];
-    const [lon1, lat1] = polyline[i];
-    const dx = (lon1 - lon0) * M_PER_DEG_LON(lat0);
-    const dy = (lat1 - lat0) * M_PER_DEG_LAT;
-    const seg = Math.hypot(dx, dy);
-    if (seg < 0.3) continue;
-    last = norm360((Math.atan2(dx, dy) * 180) / Math.PI);
-    // Within a metre of a bend, the next segment is the one to face.
-    if (seg - left > 1) return last;
-    left -= seg;
-  }
-  return last;
-}
-
-export const norm360 = (d: number) => ((d % 360) + 360) % 360;
 /** Signed turn from heading to bearing in (-180, 180]; positive = to the right. */
 export const turnTo = (bearing: number, heading: number) => {
   const d = norm360(bearing - heading + 180) - 180;
@@ -165,8 +126,10 @@ export interface LiveStateInput {
     nextInstruction?: string;
     remainingStepM: number;
     remainingTotalM: number;
-    /** Compass bearing of the route from here; null on stairs / elevators. */
+    /** Compass bearing from the user to the next node of the path; null on stairs / elevators. */
     bearingDeg: number | null;
+    /** Metres to that node. */
+    nextNodeM?: number | null;
     vertical: boolean;
   };
   estimate: Estimate;
@@ -197,7 +160,10 @@ export function formatLiveState(s: LiveStateInput): string {
   if (h == null) lines.push('Heading: unknown (no compass). Use landmarks and the camera, not degrees.');
   else {
     lines.push(`Phone points ${Math.round(h)}° (${compassName(h)})${s.heading.reliable ? '' : ', compass unreliable right now'}. User is ${s.moving ? 'moving' : 'standing still'}.`);
-    if (n && n.bearingDeg != null) lines.push(`To face the route: ${turnPhrase(turnTo(n.bearingDeg, h))}.`);
+    if (n && n.bearingDeg != null) {
+      const node = n.nextNodeM != null ? `Next node of the path: ${Math.round(n.nextNodeM)} m away; to face it` : 'To face the route';
+      lines.push(`${node}: ${turnPhrase(turnTo(n.bearingDeg, h))}.`);
+    }
   }
 
   if (s.info?.ok && s.info.fromGps) {

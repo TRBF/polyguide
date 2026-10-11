@@ -23,6 +23,7 @@ import {
   type VisionTrigger,
 } from '@polyguide/shared';
 import { captureFrame, holdCamera, startCamera } from './camera';
+import { nextNodeAhead, projectOntoRoute } from './geometry';
 import { AudioBeacon, HeadingSpeech, headingDelta } from './heading';
 import { postJson } from './net';
 import { startSensors, type SensorSnapshot } from './sensors';
@@ -39,6 +40,8 @@ const PERIODIC_MS = 4000;
 const PERIODIC_WITHIN_M = 20;
 const VISION_CLIENT_TIMEOUT_MS = 8000;
 const REROUTE_MIN_CONFIDENCE = 0.9;
+/** A known position this close to the route moves the tracker; farther off, the caller reroutes. */
+export const LOCATE_ON_ROUTE_M = 15;
 
 const floorOf = (levelId: string) => levelId.split('.').at(-1) ?? levelId;
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -203,6 +206,15 @@ export class GuidanceEngine {
     this.requestVision('approaching_node');
   };
 
+  locate = (at: { lat: number; lon: number; levelId: string }): { offM: number; stepIndex: number } | null => {
+    const t = this.snap.tracker;
+    if (!t.route || (t.phase !== 'navigating' && t.phase !== 'approaching')) return null;
+    const p = projectOntoRoute(t.route.steps, at, t.stepIndex);
+    if (!p) return null;
+    if (p.offM <= LOCATE_ON_ROUTE_M) this.dispatch({ type: 'fix', routeId: t.route.routeId, stepIndex: p.stepIndex, progressM: p.alongM });
+    return { offM: p.offM, stepIndex: p.stepIndex };
+  };
+
   setBeaconEnabled = (on: boolean) => {
     this.setBeaconWanted(on);
     this.speak(on ? 'Audio beacon on.' : 'Audio beacon off.', 'info');
@@ -241,10 +253,10 @@ export class GuidanceEngine {
     };
   }
 
-  private speak(text: string, priority: SpeechPriority) {
+  private speak(text: string, priority: SpeechPriority, automatic = false) {
     if (!text) return;
     this.set({ lastAnnouncement: text });
-    this.options.onSpeak(text, priority);
+    this.options.onSpeak(text, priority, automatic);
   }
 
   private dispatch(event: TrackerEvent) {
@@ -297,9 +309,7 @@ export class GuidanceEngine {
   }
 
   private currentDelta(): number | null {
-    const step = trackerProgress(this.snap.tracker).currentStep;
-    if (!step || isVerticalStep(step)) return null;
-    return headingDelta(step.bearingDeg, this.sensor?.headingDeg ?? null);
+    return headingDelta(targetOf(this.snap.tracker)?.bearingDeg, this.sensor?.headingDeg ?? null);
   }
 
   private tick() {
@@ -401,7 +411,7 @@ export class GuidanceEngine {
     if (moved) return;
     if (decision.speak) {
       this.lastVisionUtterance = decision.speak;
-      this.speak(decision.speak, 'vision');
+      this.speak(decision.speak, 'vision', req.trigger !== 'user_query');
     } else if (req.trigger === 'user_query') {
       // No confident answer: say what could be read, otherwise fall back on the route, never on "try again".
       this.speak(result.detectedRoomNames.length
@@ -440,6 +450,13 @@ export class GuidanceEngine {
   }
 }
 
+/** The next node of the path from where the tracker thinks the user is: what to face right now. */
+function targetOf(t: TrackerState): { bearingDeg: number; distM: number } | null {
+  const step = trackerProgress(t).currentStep;
+  if (!step || isVerticalStep(step) || (t.phase !== 'navigating' && t.phase !== 'approaching')) return null;
+  return nextNodeAhead(step.polyline, t.progressM) ?? (step.bearingDeg == null ? null : { bearingDeg: step.bearingDeg, distM: 0 });
+}
+
 export const useGuidance: UseGuidance = (route, profile, options): GuidanceState & GuidanceActions => {
   const [engine] = useState(() => new GuidanceEngine());
   engine.setInputs(route, profile, options);
@@ -451,8 +468,8 @@ export const useGuidance: UseGuidance = (route, profile, options): GuidanceState
 
   const t = snap.tracker;
   const { currentStep, nextStep, remainingStepM, remainingTotalM } = trackerProgress(t);
-  const headingDeltaDeg =
-    currentStep && !isVerticalStep(currentStep) && t.phase !== 'idle' && t.phase !== 'arrived' ? headingDelta(currentStep.bearingDeg, snap.headingDeg) : null;
+  const target = targetOf(t);
+  const headingDeltaDeg = headingDelta(target?.bearingDeg, snap.headingDeg);
 
   return {
     phase: t.phase,
@@ -465,6 +482,8 @@ export const useGuidance: UseGuidance = (route, profile, options): GuidanceState
     remainingStepM: t.route ? remainingStepM : (route?.steps[0]?.distanceM ?? 0),
     remainingTotalM: t.route ? remainingTotalM : (route?.totalDistanceM ?? 0),
     headingDeg: snap.headingDeg,
+    targetBearingDeg: target ? Math.round(target.bearingDeg) : null,
+    nextNodeM: target ? Math.round(target.distM) : null,
     headingDeltaDeg: headingDeltaDeg == null ? null : Math.round(headingDeltaDeg),
     compassReliable: snap.compassReliable,
     moving: snap.moving,
@@ -480,6 +499,7 @@ export const useGuidance: UseGuidance = (route, profile, options): GuidanceState
     whereAmI: engine.whereAmI,
     whatsAhead: engine.whatsAhead,
     checkStep: engine.checkStep,
+    locate: engine.locate,
     setBeaconEnabled: engine.setBeaconEnabled,
   };
 };

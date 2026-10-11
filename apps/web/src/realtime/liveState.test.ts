@@ -99,7 +99,7 @@ describe('formatLiveState', () => {
   };
   const base: LiveStateInput = {
     now: 0, screen: 'navigating', trip: { from: 'HG F 7', to: 'HG F 30', confirming: false },
-    navigation: { stepIndex: 1, stepCount: 4, instruction: 'Go 20 m east', remainingStepM: 12.4, remainingTotalM: 60, bearingDeg: 90, vertical: false },
+    navigation: { stepIndex: 1, stepCount: 4, instruction: 'Go 20 m east', remainingStepM: 12.4, remainingTotalM: 60, bearingDeg: 90, nextNodeM: 8, vertical: false },
     estimate: { request: {}, text: 'about 8 m into step 2', confidence: 'medium' }, info, heading: { deg: 0, reliable: true }, moving: true,
     gps: { lat: 47, lon: 8, accuracyM: 38, ageS: 3 }, needs: ['blind'],
   };
@@ -109,7 +109,7 @@ describe('formatLiveState', () => {
     expect(t).toMatch(/^\[Live state\]/);
     expect(t).toContain('step 2 of 4: "Go 20 m east". 12 m left on this step, 60 m to the destination.');
     expect(t).toContain('Phone points 0° (north). User is moving.');
-    expect(t).toContain('To face the route: turn right (90° to the right).');
+    expect(t).toContain('Next node of the path: 8 m away; to face it: turn right (90° to the right).');
     expect(t).toContain('HG F 33.4 6 m slightly left (17°)');
     expect(t).toContain('Elevator 12 m right (71°)');
     expect(t).toContain('HG F 30 (Audimax) 20 m behind');

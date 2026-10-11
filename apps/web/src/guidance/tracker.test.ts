@@ -101,6 +101,32 @@ describe('tracker', () => {
     expect(run([{ type: 'tick', dtS: 60, moving: true }], wheel, s).state.progressM).toBeCloseTo(7);
   });
 
+  it('a position fix on the current step moves progress there without talking', () => {
+    const r = run([{ type: 'fix', routeId: route.routeId, stepIndex: 0, progressM: 12 }], walk, started);
+    expect(r.state).toMatchObject({ phase: 'navigating', stepIndex: 0, progressM: 12 });
+    expect(spoken(r.effects)).toEqual([]);
+    // Near the end: approaching, so the camera confirms the step end.
+    expect(run([{ type: 'fix', routeId: route.routeId, stepIndex: 0, progressM: 27 }], walk, started).state.phase).toBe('approaching');
+  });
+
+  it('a fix on a later step jumps there and says the new instruction', () => {
+    const r = run([{ type: 'fix', routeId: route.routeId, stepIndex: 1, progressM: 5 }], walk, started);
+    expect(r.state).toMatchObject({ phase: 'navigating', stepIndex: 1, progressM: 5 });
+    expect(spoken(r.effects)).toEqual([route.steps[1].speech]);
+  });
+
+  it('a fix behind the tracker moves it back (the step counter ran ahead)', () => {
+    const ahead = run(steps(20), walk, started).state;
+    expect(run([{ type: 'fix', routeId: route.routeId, stepIndex: 0, progressM: 4 }], walk, ahead).state.progressM).toBe(4);
+    const approaching = run(steps(25), walk, started).state;
+    expect(run([{ type: 'fix', routeId: route.routeId, stepIndex: 0, progressM: 4 }], walk, approaching).state.phase).toBe('navigating');
+  });
+
+  it('ignores a fix for another route or when not navigating', () => {
+    expect(run([{ type: 'fix', routeId: 'other', stepIndex: 1, progressM: 5 }], walk, started).state.stepIndex).toBe(0);
+    expect(run([{ type: 'fix', routeId: route.routeId, stepIndex: 1, progressM: 5 }], walk, initialTrackerState).state).toEqual(initialTrackerState);
+  });
+
   it('stop, repeat and progress numbers', () => {
     expect(spoken(run([{ type: 'repeat' }], walk, started).effects)).toEqual([route.steps[0].speech]);
     const s = run(steps(10), walk, started).state;

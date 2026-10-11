@@ -136,6 +136,9 @@ export const useGuidanceMock: UseGuidance = (
     whereAmI,
     whatsAhead,
     checkStep: () => undefined,
+    locate: () => null,
+    targetBearingDeg: currentStep?.bearingDeg ?? null,
+    nextNodeM: null,
     setBeaconEnabled,
   };
 };

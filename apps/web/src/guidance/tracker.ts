@@ -30,6 +30,8 @@ export type TrackerEvent =
   | { type: 'step' }
   | { type: 'tick'; dtS: number; moving: boolean }
   | { type: 'vision'; advance: boolean; offRouteRoom: string | null; routeId?: string; stepIndex?: number }
+  /** A known position (sign read, the user's word) projected onto the route: beats the step counter. */
+  | { type: 'fix'; routeId: string; stepIndex: number; progressM: number }
   | { type: 'user_next' }
   | { type: 'user_back' }
   | { type: 'repeat' }
@@ -146,6 +148,19 @@ export function reduceTracker(state: TrackerState, event: TrackerEvent, config: 
       const step = state.route!.steps[state.stepIndex];
       const earlyOk = state.phase === 'approaching' || isVerticalStep(step) || step.distanceM <= SHORT_STEP_M || state.progressM >= VISION_MIN_FRACTION * step.distanceM;
       return earlyOk ? advance(state, 'vision') : none;
+    }
+
+    case 'fix': {
+      if (!active(state) || event.routeId !== state.route!.routeId) return none;
+      const route = state.route!;
+      if (!route.steps[event.stepIndex]) return none;
+      const progressM = Math.max(0, event.progressM);
+      if (event.stepIndex === state.stepIndex) return checkProgress({ ...state, phase: 'navigating', progressM });
+      // Another step: say its instruction (a step behind, too: the counter had run ahead of the user).
+      const entered = enterStep(state, route, event.stepIndex);
+      if (entered.state.phase !== 'navigating') return entered;
+      const r = checkProgress({ ...entered.state, progressM });
+      return { state: r.state, effects: [...entered.effects, ...r.effects] };
     }
 
     case 'user_next': {

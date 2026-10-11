@@ -429,7 +429,14 @@ export interface GuidanceState {
   remainingStepM: number;
   remainingTotalM: number;
   headingDeg: number | null;
-  /** normalize180(step.bearing - heading); null if no heading or vertical step. */
+  /**
+   * Compass bearing from the user's estimated spot to the next node of the path (what to face now); null on
+   * vertical steps or at the step's end.
+   */
+  targetBearingDeg: number | null;
+  /** Metres to that next path node. */
+  nextNodeM: number | null;
+  /** normalize180(targetBearing - heading); null if no heading or no target. */
   headingDeltaDeg: number | null;
   compassReliable: boolean;
   moving: boolean;
@@ -450,12 +457,20 @@ export interface GuidanceActions {
   whatsAhead(): void;
   /** Camera check for the current step (no-op unless navigating). */
   checkStep(): void;
+  /**
+   * A known position (sign read, the user said so): moves the tracker to that point of the route. Returns how
+   * far off the route it is (null = not on this route's floors or not navigating); the caller reroutes if far.
+   */
+  locate(at: { lat: number; lon: number; levelId: string }): { offM: number; stepIndex: number } | null;
   setBeaconEnabled(on: boolean): void;
 }
 
 export interface GuidanceOptions {
-  /** Track C's TTS queue. Track B must NOT call speechSynthesis directly. */
-  onSpeak: (text: string, priority: SpeechPriority) => void;
+  /**
+   * Track C's TTS queue. Track B must NOT call speechSynthesis directly. automatic = the app said it on its own
+   * (a camera remark), not in answer to the user.
+   */
+  onSpeak: (text: string, priority: SpeechPriority, automatic?: boolean) => void;
   /** Called when the tracker obtains a new route after rerouting. */
   onRouteChange?: (route: Extract<RouteResult, { ok: true }>) => void;
   visionEnabled?: boolean;

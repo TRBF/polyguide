@@ -22,7 +22,7 @@ import { configureSpeech, isSpeaking, onSpeakingChange, speak, stopSpeech } from
 import { VoicePicker } from './voice/VoicePicker';
 import { answerForScreen, parseAppCommand, parseCommand } from './voice/commands';
 import { clearRecents, hasSavedPreferences, loadLastFix, loadPreferences, recentPlaces, rememberPlace, saveLastFix, savePreferences, type Preferences } from './storage';
-import { useGuidance } from './guidance';
+import { LOCATE_ON_ROUTE_M, useGuidance } from './guidance';
 import { PATTERN_LEGEND, buzz, stepPattern } from './guidance/haptics';
 import { captureFrame, holdCamera, isCameraActive, startCamera } from './guidance/camera';
 import { isVerticalStep } from './guidance/tracker';
@@ -30,7 +30,7 @@ import { requestSensorPermissions } from './sensorPermissions';
 import { RealtimeAgent, type AgentStatus, type ToolResult } from './realtime/RealtimeAgent';
 import { RealtimeDock } from './realtime/RealtimeDock';
 import { LiveSensors } from './realtime/liveSensors';
-import { bearingAt, compassName, estimatePosition, formatLiveState, type Fix } from './realtime/liveState';
+import { compassName, estimatePosition, formatLiveState, type Fix } from './realtime/liveState';
 import './styles.css';
 
 type Route = Extract<RouteResult, { ok: true }>;
@@ -282,7 +282,7 @@ export function App() {
   /** One voice: the realtime agent reads app announcements when it is connected, the browser voice otherwise. */
   const say = useCallback((text: string, priority: 'instruction' | 'vision' | 'heading' | 'info') => {
     if (toolSink.current) toolSink.current.push(text);
-    else if (rtRef.current?.connected) rtRef.current.announce(text);
+    else if (rtRef.current?.connected) rtRef.current.announce(text, { droppable: priority === 'heading' });
     else speak(text, priority);
   }, []);
 
@@ -291,7 +291,13 @@ export function App() {
     say(text, priority);
   }, [say]);
 
-  const onGuidanceSpeak = useCallback((text: string, priority: 'instruction' | 'vision' | 'heading' | 'info') => {
+  const onGuidanceSpeak = useCallback((text: string, priority: 'instruction' | 'vision' | 'heading' | 'info', automatic?: boolean) => {
+    // The conversational voice already sees the camera: the guidance camera's own remarks (not answers to the
+    // user) go to it as a silent note instead of being read out between instructions.
+    if (automatic && priority === 'vision' && rtRef.current?.connected && !toolSink.current) {
+      rtRef.current.note(`[Camera, automatic] ${text}`);
+      return;
+    }
     setLiveGuidanceAnnouncement('');
     if (guidanceAnnouncementTimer.current !== null) window.clearTimeout(guidanceAnnouncementTimer.current);
     guidanceAnnouncementTimer.current = window.setTimeout(() => setLiveGuidanceAnnouncement(text), 60);
@@ -682,7 +688,11 @@ export function App() {
       setOriginMatches([]);
       setCameraMessage(`Room sign read as ${roomText}. Confidence ${Math.round(localized.confidence * 100)} percent.`);
       announce(`I read ${roomText}. Your starting point is ${matchedPlace?.name ?? roomText}.`, 'vision');
-      if (screen === 'navigate' && route) await rerouteFromNode(localized.nodeId, roomText);
+      if (screen === 'navigate' && route) {
+        // On the route: just move the guidance there. Off it: plan again from the sign.
+        const on = matchedPlace ? guidance.locate({ lat: matchedPlace.lat, lon: matchedPlace.lon, levelId: matchedPlace.levelId }) : null;
+        if (!on || on.offM > LOCATE_ON_ROUTE_M) await rerouteFromNode(localized.nodeId, roomText);
+      }
       else if (destination && matchedPlace) await createRoute(destination, matchedPlace);
       else setScreen('destination');
     } catch (error) {
@@ -774,6 +784,8 @@ export function App() {
     if (navigating) {
       announce(r.description, 'vision');
       if (r.onRoute === false && r.confidence >= 0.75) await rerouteFromNode(r.nodeId, r.place ? displayName(r.place) : 'here', token);
+      // Seen on the route: the guidance moves to that point, so the instruction matches where the user is.
+      else if (r.place && r.method !== 'route' && r.confidence >= 0.75) guidance.locate({ lat: r.place.lat, lon: r.place.lon, levelId: r.place.levelId });
       return;
     }
     // Planning: a spot found from the camera becomes the starting point (the user can still say no).
@@ -1527,7 +1539,8 @@ export function App() {
         nextInstruction: guidance.nextStep?.text,
         remainingStepM: guidance.remainingStepM,
         remainingTotalM: guidance.remainingTotalM,
-        bearingDeg: isVerticalStep(step) ? null : bearingAt(step.polyline, guidance.progressM) ?? step.bearingDeg,
+        bearingDeg: guidance.targetBearingDeg,
+        nextNodeM: guidance.nextNodeM,
         vertical: isVerticalStep(step),
       } : undefined,
       estimate,
@@ -1623,11 +1636,12 @@ export function App() {
         const next: Fix = { place, source: evidence, at: Date.now(), distanceM };
         setFix(next);
         let rerouted = false;
-        if (navigating && route) {
-          // Far from where the route says they are (or another floor): plan again from the real position.
-          const est = currentEstimate().request;
-          const far = est.lat != null && est.lon != null && (est.levelId !== place.levelId || Math.hypot((est.lat - place.lat) * 110540, (est.lon - place.lon) * 75000) > 15);
-          if (far) {
+        let onRoute: { offM: number; stepIndex: number } | null = null;
+        if (navigating && route && guidance.phase !== 'rerouting') {
+          // On the route: the tracker jumps to that point (and says the step if it changed). Off it, or on a
+          // floor the route does not walk: plan again from the real position.
+          onRoute = guidance.locate({ lat: place.lat, lon: place.lon, levelId: place.levelId });
+          if (!onRoute || onRoute.offM > LOCATE_ON_ROUTE_M) {
             await rerouteFromNode(place.nodeId, place.name);
             rerouted = true;
           }
@@ -1646,6 +1660,7 @@ export function App() {
             ...(loc.confidence < 0.9 ? { note: `Approximate: "${text}" is not an exact room name; the closest is ${place.name}. Say so, and check with another sign if it matters.` } : {}),
             alternatives: loc.alternatives.slice(0, 3).map((p) => p.name),
             rerouted,
+            ...(onRoute && !rerouted ? { on_route: `Moved the guidance to step ${onRoute.stepIndex + 1}; the app says the step if it changed.` } : {}),
             floor: info?.ok ? info.floor : undefined,
             nearby: info?.ok ? info.nearby.slice(0, 6).map((p) => `${p.label && p.kind !== 'room' ? p.label : p.name} ${Math.round(p.distM)} m`) : undefined,
           },

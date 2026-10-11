@@ -37,7 +37,11 @@ export interface RealtimeAgentOptions {
   onError?: (message: string) => void;
 }
 
-type Pending = { kind: 'reply' } | { kind: 'announce'; text: string };
+/** droppable = a heading nudge: worth saying only right now, never queued behind other speech. */
+type Pending = { kind: 'reply' } | { kind: 'announce'; text: string; droppable?: boolean; at: number };
+
+/** A queued heading nudge older than this describes a direction the user no longer faces. */
+const NUDGE_STALE_MS = 2500;
 
 interface FunctionCallItem {
   type: 'function_call';
@@ -166,10 +170,16 @@ export class RealtimeAgent {
     this.send({ type: 'conversation.item.create', item: { type: 'message', role: 'system', content: [{ type: 'input_text', text }] } });
   }
 
-  /** Speak an app announcement word for word (queued behind the current reply). */
-  announce(text: string) {
+  /**
+   * Speak an app announcement word for word (queued behind the current reply). A droppable one (heading nudge)
+   * is spoken only if nothing else is being said or waiting; otherwise it is skipped, not queued.
+   */
+  announce(text: string, opts: { droppable?: boolean } = {}) {
     if (!this.connected || !text.trim()) return;
-    this.request({ kind: 'announce', text });
+    if (opts.droppable && (this.responseActive || this.queue.length)) return;
+    // A real instruction makes any waiting nudge obsolete.
+    if (!opts.droppable) this.queue = this.queue.filter((q) => !(q.kind === 'announce' && q.droppable));
+    this.request({ kind: 'announce', text, droppable: opts.droppable, at: Date.now() });
   }
 
   /** Stop the model talking (e.g. the user tapped). */
@@ -240,9 +250,14 @@ export class RealtimeAgent {
     let next: Pending;
     if (replyAt >= 0) next = this.queue.splice(replyAt, 1)[0];
     else {
-      const texts = this.queue.map((q) => (q.kind === 'announce' ? q.text : '')).filter(Boolean);
+      const now = Date.now();
+      const texts = this.queue
+        .filter((q) => q.kind === 'announce' && !(q.droppable && now - q.at > NUDGE_STALE_MS))
+        .map((q) => (q.kind === 'announce' ? q.text : ''))
+        .filter(Boolean);
       this.queue = [];
-      next = { kind: 'announce', text: texts.join(' ') };
+      if (!texts.length) return;
+      next = { kind: 'announce', text: texts.join(' '), at: now };
     }
     this.responseActive = true;
     this.setStatus('thinking');
