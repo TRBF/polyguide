@@ -139,7 +139,7 @@ export interface LiveStateInput {
   gps: { lat: number; lon: number; accuracyM: number; ageS: number } | null;
   needs: string[];
   lastSeen?: { summary: string; ageS: number };
-  /** The altimeter's line ("Floor sensor: floor G (sure, 91 %, from elevator)…"); it is the authority on the floor. */
+  /** The altimeter's line ("Floor sensor: floor G (sure, 91 %, from elevator)…"); a strong hint on the floor. */
   floorSensor?: string;
   /** Set while the how-it-works guide is open. */
   guide?: string;
@@ -160,9 +160,9 @@ export function formatLiveState(s: LiveStateInput): string {
 
   lines.push(`Position: ${s.estimate.text}. Confidence: ${s.estimate.confidence}.`);
   if (s.info?.ok && !s.info.fromGps) lines.push(`Floor ${s.info.floor}.`);
-  // Height is measured, not guessed: when the floor sensor is sure, trust it over a floor letter the camera read.
   if (s.guide) lines.push(s.guide);
-  if (s.floorSensor) lines.push(`${s.floorSensor} When it is sure, it decides the floor; a sign's floor letter that disagrees is probably misread.`);
+  // The floor sensor is a measurement, but it can miss a ride: a sign read clearly or the user's word beats it.
+  if (s.floorSensor) lines.push(`${s.floorSensor} A hint, not the last word: if you read a sign clearly or the user says their floor, believe that and call set_position.`);
 
   if (h == null) lines.push('Heading: unknown (no compass). Use landmarks and the camera, not degrees.');
   else {

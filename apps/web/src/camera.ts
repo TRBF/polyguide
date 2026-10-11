@@ -39,7 +39,11 @@ export function releaseScreenWakeLock(): void {
   if (active) void active.release().catch(() => undefined);
 }
 
-export async function requestAppPermissions(): Promise<string[]> {
+/**
+ * `microphone: false` when the realtime voice opens the mic itself in the same tap: two mic requests at once
+ * make phones fail the second with "Could not start audio source".
+ */
+export async function requestAppPermissions({ microphone = true }: { microphone?: boolean } = {}): Promise<string[]> {
   const granted: string[] = [];
   try {
     // Called first and synchronously from the click: iOS only honours it while the gesture is fresh.
@@ -50,11 +54,11 @@ export async function requestAppPermissions(): Promise<string[]> {
   try {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('Media permissions are not supported.');
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
+      audio: microphone,
       video: { facingMode: { ideal: 'environment' } },
     });
     stream.getTracks().forEach((track) => track.stop());
-    granted.push('camera', 'microphone');
+    granted.push('camera', ...(microphone ? ['microphone'] : []));
   } catch {
     // The browser may deny mic/camera; typed commands and touch remain available.
   }

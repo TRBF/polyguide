@@ -63,6 +63,11 @@ const DIGIT_CONFUSION: Record<string, Record<string, number>> = {
 const LOST_DOT_COST = 0.3;
 const FLOOR_UNREAD_COST = 0.4;
 const SUB_UNREAD_COST = 0.35;
+/**
+ * The sub-room read is not in the map ("F 30.2" exists on the door, the data has only F 30, F 30.1, F 30.6):
+ * its siblings are metres away, so this costs less than reading the floor letter wrong (E↔F).
+ */
+const SUB_MISSING_COST = 0.4;
 
 /** "HG F 33.2", "f33.2", "F 33,2", "E 41", "33.2", "F 3?", "331" → parts. */
 export function parseSign(text: string): SignReading | null {
@@ -150,8 +155,8 @@ export function interpretSign(text: string, prior?: SignPrior | null, limit = 5)
       const fc = floorCost(reading.floor, room.floor);
       if (!Number.isFinite(fc)) continue;
       let sc = 0;
-      if (v.sub && room.sub !== v.sub) continue;
-      if (!v.sub && room.sub) sc = SUB_UNREAD_COST; // "F 33" read, the door says F 33.2
+      if (v.sub && room.sub !== v.sub) sc = SUB_MISSING_COST + (room.sub ? 0.05 : 0); // the main room first
+      else if (!v.sub && room.sub) sc = SUB_UNREAD_COST; // "F 33" read, the door says F 33.2
       const partialCost = reading.partial && room.number !== v.number ? 0.5 : 0;
       consider(room, v.cost + fc + sc + partialCost);
     }
