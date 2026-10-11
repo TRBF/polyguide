@@ -26,6 +26,15 @@ const LOOPBACK = /^(127\.|::1$|::ffff:127\.)/;
 export function clientKey(c: Context): string {
   const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined;
   const peer = env?.incoming?.socket?.remoteAddress ?? 'unknown';
+  // TRUST_PROXY=1: deployed behind the VIScon reverse proxy (via Docker), so every request arrives from the proxy.
+  // It authenticates users and sets X-User-Id, which is then the user; else the address it appended last.
+  // Only safe while the app is reachable through that proxy alone (no open firewall port, login enabled).
+  if (process.env.TRUST_PROXY === '1') {
+    const user = c.req.header('x-user-id')?.trim();
+    if (user) return `user:${user.toLowerCase()}`;
+    const last = c.req.header('x-forwarded-for')?.split(',').map((s) => s.trim()).filter(Boolean).at(-1);
+    return last ?? peer;
+  }
   if (!LOOPBACK.test(peer)) return peer;
   // (Not CF-Connecting-IP: behind ngrok a client could set it freely. cloudflared also appends X-Forwarded-For.)
   const hops = c.req.header('x-forwarded-for')?.split(',').map((s) => s.trim()).filter(Boolean) ?? [];

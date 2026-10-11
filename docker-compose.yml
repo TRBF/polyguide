@@ -1,0 +1,30 @@
+# Deploy on the VIScon VM:   docker compose up -d --build
+# The managed address (https://NN.hackathon.ethz.ch) forwards to port 8080 and handles TLS and login.
+services:
+  polyguide:
+    build: .
+    image: polyguide:latest
+    # Keeps running after reboots and after our access ends (Sunday noon).
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    # OPENAI_API_KEY and friends; never committed (see apps/server/.env.example).
+    env_file:
+      - apps/server/.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8080"
+      SERVE_WEB: "1"
+      # Behind the VIScon proxy: identify users by its X-User-Id header for rate limits.
+      TRUST_PROXY: "1"
+      # The laptop's antivirus workaround is not needed on the VM.
+      NODE_OPTIONS: ""
+    volumes:
+      # The HG map data from the repo; survey captures (refs.json) persist across rebuilds.
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

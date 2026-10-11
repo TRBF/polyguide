@@ -30,6 +30,20 @@ describe('clientKey', () => {
   });
 });
 
+describe('clientKey behind the VIScon proxy (TRUST_PROXY=1)', () => {
+  it('identifies the logged-in user from X-User-Id, else the address the proxy appended', async () => {
+    process.env.TRUST_PROXY = '1';
+    try {
+      const a = await keyApp().request('/key', { headers: { 'x-user-id': 'Ada@ETHZ.ch', 'x-forwarded-for': '1.2.3.4' } }, peer('172.18.0.1'));
+      expect(await a.text()).toBe('user:ada@ethz.ch');
+      const b = await keyApp().request('/key', { headers: { 'x-forwarded-for': '6.6.6.6, 198.51.100.7' } }, peer('172.18.0.1'));
+      expect(await b.text()).toBe('198.51.100.7');
+    } finally {
+      delete process.env.TRUST_PROXY;
+    }
+  });
+});
+
 describe('rateLimit', () => {
   it('cannot be dodged by rotating X-Forwarded-For from a remote peer', async () => {
     const app = new Hono();
