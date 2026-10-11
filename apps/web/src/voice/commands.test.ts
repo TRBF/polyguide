@@ -87,3 +87,12 @@ describe('parseAppCommand', () => {
     expect(parseAppCommand('too fast')).toEqual({ type: 'repeat_slower' });
   });
 });
+
+describe('start over / new route', () => {
+  it.each(['new route', 'start over', 'plan a new route', 'another destination', 'cancel this route', 'clear the trip', 'start from scratch', 'neue route', 'von vorne'])('"%s"', (said) => {
+    expect(parseAppCommand(said)).toEqual({ type: 'start_over' });
+  });
+  it('does not swallow a real trip', () => {
+    expect(parseAppCommand('take me to F 30')).toBeNull();
+  });
+});

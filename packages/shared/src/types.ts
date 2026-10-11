@@ -380,6 +380,8 @@ export type AgentAction =
   | 'where_am_i' | 'whats_ahead'
   | 'emergency' | 'elevator_broken'
   | 'slower' | 'faster' | 'settings' | 'help'
+  | 'set_setting' // "turn off vibration", "bigger text", "speak German": change one setting by voice
+  | 'start_over' // "new route", "let's plan something else": clear the trip, keep where the user is
   | 'none'; // small talk, or nothing to do: just speak the reply
 
 export interface AgentContext {
@@ -417,6 +419,8 @@ export type AgentResponse =
       optionsFor?: 'from' | 'to';
       option?: number;
       needs?: { add: (Need | 'avoidStairs')[]; remove: (Need | 'avoidStairs')[] };
+      /** set_setting: the one setting to change. */
+      setting?: import('./voiceSettings').SettingChange;
       latencyMs: number;
     }
   | { ok: false; reason: 'disabled' | 'timeout' | 'model_error' | 'rate_limited' | 'invalid_request'; message: string };

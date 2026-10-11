@@ -6,6 +6,7 @@ import {
   type IntentRequest,
   type Need,
   type LocalizeRequest,
+  type SettingChange,
   type Place,
   type LocateRoomResponse,
   type PositionInfo,
@@ -29,6 +30,7 @@ import { captureFrame, holdCamera, isCameraActive, startCamera } from './guidanc
 import { isVerticalStep } from './guidance/tracker';
 import { positionGate, type FixSource, type GateCurrent } from './guidance/jumpGate';
 import { altimeter } from './guidance/altimeter';
+import { applySettingChange, describeSettings, parseSettingCommand } from './voice/settingsVoice';
 import { requestSensorPermissions } from './sensorPermissions';
 import { RealtimeAgent, type AgentStatus, type ToolResult } from './realtime/RealtimeAgent';
 import { RealtimeDock } from './realtime/RealtimeDock';
@@ -55,16 +57,18 @@ const screenHelp: Record<Screen, string> = {
   permissions: 'Say enable to allow camera, motion and microphone. Say next to continue without them.',
   where: 'Say I am at, and a room, for example: I am at H G E 41. Say scan sign to read a room sign with the camera, or use GPS outdoors. If I list options, say a number.',
   destination: 'Say take me to, and a room or place, for example: take me to H G F 30, or take me to the nearest toilet. If I list options, say a number.',
-  preview: 'Say start to begin, repeat to hear the route again, or back to choose another destination.',
-  navigate: 'Say next when you have done a step, back for the previous step, repeat, where am I, what is ahead, or stop. If an elevator is not working, say: the elevator is not working.',
-  arrived: 'Say new destination, or take me to, and a room.',
-  settings: 'Say faster, slower, turn on or turn off audio beacon, or back.',
+  preview: 'Say start to begin, repeat to hear the route again, or new route to plan another one.',
+  navigate: 'Say next when you have done a step, back for the previous step, repeat, where am I, what is ahead, stop, or new route. If an elevator is not working, say: the elevator is not working.',
+  arrived: 'Say new route, or take me to, and a room.',
+  settings: 'Say speak slower or faster, turn vibration on or off, turn the direction beep on or off, bigger or smaller text, voice only mode on or off, speak German, or what are my settings. Say done to go back.',
 };
-const voiceOnlyHint = 'You can also say settings, slower, start over, or change my needs at any time. In an emergency, say emergency.';
+const voiceOnlyHint = 'At any time you can say new route, where am I, speak slower, turn off vibration, bigger text, or what are my settings. In an emergency, say emergency.';
 /** The one question the trip screen asks, in the user's own words back. */
 const ASK_TRIP = 'Where are you, and where do you want to go? For example: I am in F 7, take me to F 30.';
 /** How many choices are read out, shown and numbered: the same everywhere, so "number 3" means one thing. */
 const MAX_OPTIONS = 4;
+/** One-tap destinations: [button label, what it means when said]. */
+const QUICK_PICKS: [string, string][] = [['Toilet', 'nearest toilet'], ['Exit', 'nearest exit'], ['Elevator', 'nearest elevator'], ['Food', 'nearest food and drink']];
 const WELCOME = `Welcome to PolyGuide. ${safetyNotice} ${ASK_TRIP} If you are blind or use a wheelchair, tell me.`;
 const LOOK_HINT = 'If you do not know where you are, hold the phone up in front of you and I will look around.';
 
@@ -518,6 +522,33 @@ export function App() {
 
   function updatePreferences(updater: (current: Preferences) => Preferences): void {
     setPreferences(updater);
+  }
+
+  /**
+   * One setting changed by voice (local parser, voice agent or realtime agent). Returns what to say; with
+   * `speak`, says it too. Turning the app voice off says the confirmation first, then goes quiet.
+   */
+  function applyVoiceSetting(change: SettingChange, speak = true): string {
+    const preview = applySettingChange(preferences, change);
+    if (!preview) return 'I cannot change that setting.';
+    const apply = () => updatePreferences((current) => applySettingChange(current, change)?.prefs ?? current);
+    if (preview.sayFirst && speak) {
+      announce(preview.say);
+      let done = false;
+      let off: () => void = () => undefined;
+      const later = () => {
+        if (done) return;
+        done = true;
+        off();
+        apply();
+      };
+      off = onSpeakingChange((speaking) => { if (!speaking) later(); });
+      window.setTimeout(later, 8000);
+      return preview.say;
+    }
+    apply();
+    if (speak) announce(preview.say);
+    return preview.say;
   }
 
   function setNeedState(need: Need, enabled: boolean): void {
@@ -1248,6 +1279,14 @@ export function App() {
       openSettings();
       return;
     }
+    // Settings by voice alone, instantly and offline: "speak slower", "turn off vibration", "bigger text"…
+    const settingCommand = parseSettingCommand(said);
+    if (settingCommand) {
+      misunderstood.current = 0;
+      if (settingCommand === 'read') announce(describeSettings(preferences));
+      else applyVoiceSetting(settingCommand);
+      return;
+    }
     // Walking: step commands never wait for the network. "Where am I?" goes straight to the camera anywhere.
     const quick = parseCommand(said);
     if (quick?.type === 'where_am_i') {
@@ -1343,12 +1382,16 @@ export function App() {
         await runAppCommand('elevator_broken');
         return;
       case 'slower':
-      case 'faster': {
-        const step = r.action === 'slower' ? -0.1 : 0.1;
-        updatePreferences((current) => ({ ...current, settings: { ...current.settings, speechRate: Math.min(1.5, Math.max(0.6, +(current.settings.speechRate + step).toFixed(2))) } }));
-        announce(r.action === 'slower' ? 'Speaking slower.' : 'Speaking faster.');
+      case 'faster':
+        applyVoiceSetting({ setting: 'speech_rate', value: r.action === 'slower' ? 'down' : 'up' });
         return;
-      }
+      case 'set_setting':
+        if (r.setting) applyVoiceSetting(r.setting);
+        else announce(r.reply || 'Which setting? For example: speak slower, or turn off vibration.');
+        return;
+      case 'start_over':
+        startOver();
+        return;
       case 'settings':
         openSettings();
         return;
@@ -1529,22 +1572,66 @@ export function App() {
     } else announce(`Okay, avoiding that elevator. ${routeSummary(result)}`);
   }
 
-  function startOver(): void {
+  /** Swap From and To ("take me back"): a new proposal to confirm with one yes. */
+  function swapTrip(): void {
+    const from = pendingRef.current?.from ?? origin ?? undefined;
+    const to = pendingRef.current?.to ?? destination ?? route?.to ?? undefined;
+    if (!from && !to) return;
+    if (route) {
+      guidance.stop();
+      setRoute(null);
+    }
+    setDestination(null);
+    setAgentOptions(null);
+    setPending({ from: to, to: from });
+    setScreen('where');
+    if (from && to) announce(`From ${displayName(to)} to ${displayName(from)}. Is that right?`);
+    else announce(to ? `You are at ${displayName(to)}. Where do you want to go?` : `Going to ${displayName(from!)}. Where are you now?`);
+  }
+
+  /** One tap for the trips people make most: the same path as saying it, so the agent resolves "nearest". */
+  function quickPick(spoken: string): void {
+    void dispatchCommand(`take me to the ${spoken}`);
+  }
+
+  /** A recent destination: no network needed to propose it. */
+  function pickRecent(place: Place): void {
+    const from = pendingRef.current?.from ?? origin ?? undefined;
+    setAgentOptions(null);
+    setPending({ from, to: place });
+    announce(from ? `From ${displayName(from)} to ${displayName(place)}. Is that right?` : `Going to ${displayName(place)}. Where are you now?`);
+  }
+
+  /**
+   * A new trip from scratch: guidance stops and the destination clears, but where the user is stays the start
+   * (the place they arrived at, or a recent sign/word fix), so "new route" is one sentence away from walking.
+   */
+  function startOver(speakIt = true): void {
+    const fixAgeMs = fix ? Date.now() - fix.at : Infinity;
+    // Arrived: the destination. Walking: only a fresh fix (the start of the route is behind them). Planning: they
+    // have not moved, so the start they stated still holds.
+    const here = screen === 'arrived' && route ? route.to
+      : screen === 'navigate' ? (fix && fixAgeMs < 2 * 60_000 ? fix.place : null)
+      : (fix && fixAgeMs < 10 * 60_000 ? fix.place : null) ?? pendingRef.current?.from ?? origin ?? null;
     guidance.stop();
     releaseScreenWakeLock();
+    positionGate.clear();
     setRoute(null);
     setDestination(null);
     setDestinationQuery('');
     setDestinationMatches([]);
-    setOrigin(null);
-    setOriginQuery('');
+    setOrigin(here);
+    setOriginQuery(here?.name ?? '');
     setOriginMatches([]);
     setAvoidElevators([]);
     setPending(null);
     setAgentOptions(null);
     setHeard('');
+    setEditing(null);
     setScreen('where');
-    announce(`Starting over. ${ASK_TRIP}`);
+    const say = here ? `New route. You are at ${displayName(here)}. Where do you want to go?` : `Starting over. ${ASK_TRIP}`;
+    if (speakIt) announce(say);
+    else setMessage(say);
   }
 
   function beginNavigation(next: Route | null = route): void {
@@ -1868,6 +1955,20 @@ export function App() {
         return { output: { ok: true, note: 'Routes planned from now on use these needs.' } };
       }
 
+      case 'settings': {
+        if (args.action === 'read') return { output: { ok: true, say: describeSettings(preferences) } };
+        const change = { setting: args.setting, value: args.value } as SettingChange;
+        const preview = applySettingChange(preferences, change);
+        if (!preview) return { output: { ok: false, error: 'Not a setting that can be changed that way.', hint: 'Ask which setting they mean.' } };
+        // The model speaks the confirmation itself; the app's own voice stays out of it.
+        applyVoiceSetting(change, false);
+        return { output: { ok: true, say: preview.say } };
+      }
+
+      case 'start_over':
+        startOver(false);
+        return { output: { ok: true, start: fix?.place.name ?? null, note: 'Trip cleared; guidance stopped. Ask where they want to go.' } };
+
       case 'report_elevator_broken':
         await reportElevatorOutOfService();
         return { output: { ok: true } };
@@ -1946,6 +2047,8 @@ export function App() {
   runToolRef.current = runTool;
 
   const voiceFirst = preferences.settings.voiceFirst;
+  // Recent destinations (not where the user is now); read on render so a new trip shows up at once.
+  const recentDestinations = recentPlaces('destination').filter((p) => p.id !== (pending?.from ?? origin)?.id);
   const tripFrom = pending?.from ?? origin ?? null;
   const tripTo = pending?.to ?? destination ?? (route ? route.to : null);
   const confirming = Boolean(pending?.from && pending?.to);
@@ -2026,12 +2129,40 @@ export function App() {
             {tripRow('from', 'From', tripFrom, 'Where are you?')}
             {tripRow('to', 'To', tripTo, 'Where to?')}
           </section>
-          <button type="button" className="trip-locate" onClick={() => void locateMe()} disabled={thinking}>
-            <span aria-hidden="true">◎</span> {thinking ? 'Looking around…' : 'Where am I? Use the camera'}
-          </button>
+          <div className="trip-tools" role="group" aria-label="Trip tools">
+            <button type="button" className="trip-tool trip-tool-locate" onClick={() => void locateMe()} disabled={thinking}>
+              <span aria-hidden="true">◎</span> {thinking ? 'Looking…' : 'Where am I?'}
+            </button>
+            {(tripFrom || tripTo) && (
+              <button type="button" className="trip-tool" onClick={swapTrip} aria-label="Swap start and destination">
+                <span aria-hidden="true">⇅</span> Swap
+              </button>
+            )}
+            {(tripFrom || tripTo || route) && (
+              <button type="button" className="trip-tool" onClick={() => startOver()} aria-label="New route: clear the destination, keep where I am">
+                <span aria-hidden="true">↺</span> New route
+              </button>
+            )}
+          </div>
+
+          {/* The trips people make most, one tap each, while there is no destination yet. */}
+          {!tripTo && !confirming && !thinking && optionList.length === 0 && (
+            <div className="quick-picks" role="group" aria-label="Quick destinations">
+              <span className="row-label" aria-hidden="true">Go to</span>
+              {recentDestinations.slice(0, 2).map((place) => (
+                <button key={place.id} type="button" className="chip chip-recent" onClick={() => pickRecent(place)}>
+                  <span aria-hidden="true">↻ </span>{displayName(place)}
+                </button>
+              ))}
+              {QUICK_PICKS.map(([label, spoken]) => (
+                <button key={label} type="button" className="chip" onClick={() => quickPick(spoken)}>{label}</button>
+              ))}
+            </div>
+          )}
 
           {!voiceFirst && (
             <div className="need-chips" role="group" aria-label="Access needs">
+              <span className="row-label" aria-hidden="true">Needs</span>
               {needChips.map(([need, label]) => (
                 <button key={need} type="button" className="chip" aria-pressed={needOn(need)} onClick={() => toggleNeed(need)}>{label}</button>
               ))}
@@ -2175,6 +2306,7 @@ export function App() {
             <h1 id="settings-title">Settings</h1>
             <button className="button button-accent" type="button" onClick={moveBack}>Done</button>
           </div>
+          <p className="settings-voice-hint"><strong>All of these work by voice too.</strong> Say, for example: speak slower, turn off vibration, bigger text, voice only mode, speak German, or what are my settings.</p>
           <div className="setting-control">
             <span><strong>Your needs</strong><small>Routes adapt to them</small></span>
             <div className="need-chips" role="group" aria-label="Access needs">

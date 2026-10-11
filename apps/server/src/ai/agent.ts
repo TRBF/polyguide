@@ -10,7 +10,7 @@
  */
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { USE_TYPES, useTypeFromText, type AgentAction, type AgentRequest, type AgentResponse, type Need, type Place } from '@polyguide/shared';
+import { SETTING_VALUES, VOICE_SETTINGS, VOICE_SETTINGS_HELP, isValidSettingChange, USE_TYPES, useTypeFromText, type AgentAction, type AgentRequest, type AgentResponse, type Need, type Place } from '@polyguide/shared';
 import { planRoute } from '@polyguide/routing';
 import { getGraph, getPlace, getProfileOptions, matchPlaces, normRoom, searchPlaces } from '../graphStore';
 import { classifyError, describeError, getOpenAI, reasoningEffort, textModel, withTimeout } from './openai';
@@ -19,7 +19,7 @@ import { sanitizeUtterance } from './visionPrompt';
 const TIMEOUT_MS = 6000;
 const MAIN_ENTRANCE = 'pl_lm_137';
 
-const ACTIONS = ['set_trip', 'confirm', 'reject', 'choose_option', 'set_needs', 'start', 'next', 'back', 'repeat', 'stop', 'where_am_i', 'whats_ahead', 'emergency', 'elevator_broken', 'slower', 'faster', 'settings', 'help', 'none'] as const satisfies readonly AgentAction[];
+const ACTIONS = ['set_trip', 'confirm', 'reject', 'choose_option', 'set_needs', 'start', 'next', 'back', 'repeat', 'stop', 'where_am_i', 'whats_ahead', 'emergency', 'elevator_broken', 'slower', 'faster', 'settings', 'help', 'set_setting', 'start_over', 'none'] as const satisfies readonly AgentAction[];
 const NEEDS = ['wheelchair', 'blind', 'lowVision', 'avoidStairs'] as const;
 
 /** A place the client already knows: ids and names are short, and only the id is trusted (names are re-read). */
@@ -58,13 +58,15 @@ const modelOutput = z.object({
   option: z.number().int().nullable(),
   needs_add: z.array(z.enum(NEEDS)),
   needs_remove: z.array(z.enum(NEEDS)),
+  setting: z.enum(VOICE_SETTINGS).nullable(),
+  setting_value: z.enum(SETTING_VALUES).nullable(),
   reply: z.string(),
 });
 
 const JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['action', 'from_text', 'to_text', 'option', 'needs_add', 'needs_remove', 'reply'],
+  required: ['action', 'from_text', 'to_text', 'option', 'needs_add', 'needs_remove', 'setting', 'setting_value', 'reply'],
   properties: {
     action: { type: 'string', enum: ACTIONS },
     from_text: { type: ['string', 'null'], description: 'Where the user is now, as a room code ("HG F 7") or a place ("main entrance", "Audimax"). null if not said.' },
@@ -72,6 +74,8 @@ const JSON_SCHEMA = {
     option: { type: ['integer', 'null'], description: '1-based choice when picking from options read out.' },
     needs_add: { type: 'array', items: { type: 'string', enum: NEEDS } },
     needs_remove: { type: 'array', items: { type: 'string', enum: NEEDS } },
+    setting: { type: ['string', 'null'], enum: [...VOICE_SETTINGS, null], description: 'set_setting only: which setting.' },
+    setting_value: { type: ['string', 'null'], enum: [...SETTING_VALUES, null], description: 'set_setting only: on/off, up/down/reset, en/de.' },
     reply: { type: 'string', description: 'At most 25 words to speak back. For set_trip leave it empty: the app writes the confirmation.' },
   },
 } as const;
@@ -119,6 +123,8 @@ Actions:
 - set_needs: "I'm blind", "I use a wheelchair", "avoid stairs", "I'm not in a wheelchair" → needs_add / needs_remove (wheelchair, blind, lowVision, avoidStairs). Reply with a short confirmation.
 - start: begin navigation of a ready route. next, back, repeat, stop: step commands. where_am_i, whats_ahead: questions while walking.
 - emergency: danger, hurt, fell, call for help. elevator_broken: an elevator is out of service.
+- set_setting: change one setting by voice: ${VOICE_SETTINGS_HELP}. Fill setting and setting_value; leave reply empty (the app confirms). "Speak slower" = speech_rate down. "settings" (open the settings screen) only when they ask to open or see settings.
+- start_over: a new trip from scratch ("new route", "start over", "let's go somewhere else", "cancel this route").
 - slower, faster: speech speed. settings: open settings. help: what can I say.
 - none: anything else; reply briefly and helpfully (e.g. ask where they are or where they want to go). Never claim a path is safe or clear.
 The app state comes with each message. Keep replies short, plain, and spoken-friendly.`;
@@ -297,7 +303,11 @@ agentRoutes.post('/agent', async (c) => {
       return c.json<AgentResponse>({ ok: true, action: 'set_trip', reply: text, from, to, options, optionsFor, latencyMs });
     }
     const needs = m.action === 'set_needs' ? { add: m.needs_add, remove: m.needs_remove } as { add: (Need | 'avoidStairs')[]; remove: (Need | 'avoidStairs')[] } : undefined;
-    return c.json<AgentResponse>({ ok: true, action: m.action, reply, option: m.option ?? undefined, needs, latencyMs });
+    const setting = m.action === 'set_setting' && m.setting && m.setting_value ? { setting: m.setting, value: m.setting_value } : undefined;
+    if (m.action === 'set_setting' && !isValidSettingChange(setting)) {
+      return c.json<AgentResponse>({ ok: true, action: 'none', reply: 'I can change speech speed, voice-only mode, vibration, the direction beep, text size and language.', latencyMs });
+    }
+    return c.json<AgentResponse>({ ok: true, action: m.action, reply, option: m.option ?? undefined, needs, ...(setting ? { setting } : {}), latencyMs });
   } catch (err) {
     const { reason, message } = classifyError(err, aborted);
     console.warn(`agent failed: ${reason} (${describeError(err)})`);

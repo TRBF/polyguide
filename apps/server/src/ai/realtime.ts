@@ -8,6 +8,7 @@
  * nearby room doors relative to where the phone points, GPS. See apps/web/src/realtime.
  */
 import { Hono } from 'hono';
+import { SETTING_VALUES, VOICE_SETTINGS, VOICE_SETTINGS_HELP } from '@polyguide/shared';
 import { z } from 'zod';
 import type { Place, RealtimeSessionResponse, ResolveTripResponse } from '@polyguide/shared';
 import { getPlace } from '../graphStore';
@@ -113,6 +114,27 @@ const TOOLS = [
   },
   {
     type: 'function',
+    name: 'settings',
+    description: `Change one app setting by voice, or read the current settings aloud. Settings: ${VOICE_SETTINGS_HELP}. The result has a "say" sentence: say it.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['change', 'read'] },
+        setting: { type: 'string', enum: [...VOICE_SETTINGS] },
+        value: { type: 'string', enum: [...SETTING_VALUES] },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: 'function',
+    name: 'start_over',
+    description: 'A new trip from scratch ("new route", "start over", "somewhere else", "cancel this route"): stops guidance, clears the destination, keeps where the user is as the new start.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    type: 'function',
     name: 'report_elevator_broken',
     description: 'The elevator on the route is out of service: avoid it and route again from here.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
@@ -166,6 +188,7 @@ Position sources, best first: a room sign you read in a photo; the user saying w
 - A tool result may contain "app_said": app messages that were not spoken yet. Say them (instructions word for word) in your answer.
 - Some of your own earlier turns are app announcements you read aloud (step instructions, warnings); they are the app talking, not you deciding.
 - Needs ("I use a wheelchair", "avoid stairs", "I am blind") → set_needs. Elevator out of order → report_elevator_broken. Danger, hurt, fell → emergency immediately.
+- Settings by voice ("speak slower", "turn off vibration", "bigger text", "voice only mode", "speak German", "what are my settings") → settings. A new trip from scratch ("new route", "start over", "cancel this route") → start_over, then ask where they want to go.
 
 # Building
 The user speaks; transcription may garble room codes ("F seven" = "F 7", "H G E forty one" = "HG E 41", "F thirty point one" = "F 30.1").
