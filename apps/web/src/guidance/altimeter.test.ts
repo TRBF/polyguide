@@ -142,4 +142,14 @@ describe('Altimeter', () => {
     a.onRide({ deltaM: -7.3, durationS: 11, peakAccel: 0.6 });
     expect(seen.at(-1)).toBe('ETH.HG.E');
   });
+
+  it('a 7 m ride from E (past the EO half floor) lands on F, sure enough to finish an elevator step', () => {
+    const a = new Altimeter();
+    a.setLevels(HG);
+    a.setKnown('ETH.HG.E');
+    a.onRide({ deltaM: 7.15, durationS: 9, peakAccel: 0.6 });
+    expect(a.current.levelId).toBe('ETH.HG.F');
+    expect(a.current.probability).toBeGreaterThanOrEqual(0.5);
+  });
 });
+

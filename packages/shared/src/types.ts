@@ -488,6 +488,11 @@ export interface GuidanceOptions {
   onRouteChange?: (route: Extract<RouteResult, { ok: true }>) => void;
   visionEnabled?: boolean;
   beaconEnabled?: boolean;
+  /**
+   * Demo walk (presentations): progress advances at walking speed without sensors, elevator and stairs steps
+   * are completed through the real altimeter after a short ride, and compass cues stay quiet. Clearly labelled.
+   */
+  simulateWalk?: boolean;
 }
 
 /** Signature implemented by Track B (`useGuidance`) and mocked by Track C (`useGuidanceMock`). */

@@ -25,7 +25,7 @@ import {
 import { captureFrame, holdCamera, startCamera } from './camera';
 import { nextNodeAhead, pointAlong, projectOntoRoute } from './geometry';
 import { positionGate } from './jumpGate';
-import { ALTIMETER_CONFIDENT, altimeter, type AltimeterState } from './altimeter';
+import { ALTIMETER_CONFIDENT, RISER_M, altimeter, type AltimeterState } from './altimeter';
 import { AudioBeacon, HeadingSpeech, headingDelta } from './heading';
 import { postJson } from './net';
 import { startSensors, type SensorSnapshot } from './sensors';
@@ -43,6 +43,11 @@ const PERIODIC_WITHIN_M = 20;
 const VISION_CLIENT_TIMEOUT_MS = 8000;
 /** A sign's probability after the HG sign model (number, letter, misreads, prior); big jumps also face the gate. */
 const REROUTE_MIN_CONFIDENCE = 0.6;
+/** Demo walk: a calm walking pace, and how long an elevator or stairs "ride" takes. */
+const DEMO_SPEED_MPS = 1.1;
+const DEMO_RIDE_MS = 6000;
+/** On an elevator/stairs step, the floor the route expects counts as reached at this belief. */
+const EXPECTED_FLOOR_MIN = 0.5;
 /** A known position this close to the route moves the tracker; farther off, the caller reroutes. */
 export const LOCATE_ON_ROUTE_M = 15;
 
@@ -90,6 +95,7 @@ export class GuidanceEngine {
   private visionUnavailable = false;
   private stopAltimeter: (() => void) | null = null;
   private lastWrongFloorRideAt = 0;
+  private demoVertical: { key: string; since: number; done: boolean } | null = null;
   private lastVisionUtterance = '';
   private offHeadingSince: number | null = null;
   private lastOffHeadingVisionAt = -Infinity;
@@ -257,6 +263,7 @@ export class GuidanceEngine {
 
   private config(): TrackerConfig {
     const wheel = this.profile.needs.includes('wheelchair');
+    if (this.options.simulateWalk) return { progressMode: 'motion', stepLengthM: 0.7, speedMps: DEMO_SPEED_MPS };
     return {
       progressMode: wheel ? 'motion' : 'steps',
       stepLengthM: this.profile.stepLengthM ?? 0.7,
@@ -290,6 +297,7 @@ export class GuidanceEngine {
 
   /** A footstep: progress along the step, and on stairs one riser up or down for the altimeter. */
   private onStep() {
+    if (this.options.simulateWalk) return; // the demo walker moves, not the presenter's feet
     const step = trackerProgress(this.snap.tracker).currentStep;
     if (step?.maneuver === 'take_stairs_up') altimeter.onStairStep(1);
     else if (step?.maneuver === 'take_stairs_down') altimeter.onStairStep(-1);
@@ -303,17 +311,57 @@ export class GuidanceEngine {
   private onFloor(s: AltimeterState) {
     const t = this.snap.tracker;
     const step = trackerProgress(t).currentStep;
-    if (!step || !s.levelId || s.probability < ALTIMETER_CONFIDENT || (t.phase !== 'navigating' && t.phase !== 'approaching')) return;
+    if (!step || !s.levelId || (t.phase !== 'navigating' && t.phase !== 'approaching')) return;
     if (!isVerticalStep(step)) return;
-    if (s.levelId === step.toLevelId) {
+    // The route expects this floor: the most likely floor being it is enough (half floors nearby keep the
+    // belief from looking certain). Claiming a different floor needs real confidence.
+    if (s.levelId === step.toLevelId && s.probability >= EXPECTED_FLOOR_MIN) {
       this.dispatch({ type: 'floor_reached', levelId: s.levelId });
       return;
     }
+    if (s.probability < ALTIMETER_CONFIDENT) return;
     const ride = s.lastRide;
     if (s.basis === 'elevator' && ride && Date.now() - ride.at < 3000 && ride.at !== this.lastWrongFloorRideAt && s.levelId !== step.levelId && step.toLevelId) {
       this.lastWrongFloorRideAt = ride.at;
       const floor = (id: string) => id.split('.').at(-1);
       this.speak(`This seems to be floor ${floor(s.levelId)}, but the route goes to floor ${floor(step.toLevelId)}. Stay in the elevator and choose floor ${floor(step.toLevelId)}.`, 'instruction');
+    }
+  }
+
+  /**
+   * Demo walk: on an elevator or stairs step, after a short "ride" the height change is fed to the real altimeter
+   * (risers for stairs, a ride for elevators), which then finishes the step exactly as it would on site.
+   */
+  private simulateFloorChange(now: number) {
+    const t = this.snap.tracker;
+    const step = trackerProgress(t).currentStep;
+    const key = `${t.route?.routeId}:${t.stepIndex}`;
+    if (!step || !isVerticalStep(step) || !step.toLevelId) {
+      this.demoVertical = null;
+      return;
+    }
+    if (this.demoVertical?.key !== key) {
+      this.demoVertical = { key, since: now, done: false };
+      return;
+    }
+    // Safety net for presentations: a vertical step never stalls the demo.
+    if (this.demoVertical.done) {
+      if (now - this.demoVertical.since > DEMO_RIDE_MS + 4000) this.dispatch({ type: 'user_next' });
+      return;
+    }
+    if (now - this.demoVertical.since < DEMO_RIDE_MS) return;
+    this.demoVertical.done = true;
+    const from = altimeter.belief.elevationOf(step.levelId);
+    const to = altimeter.belief.elevationOf(step.toLevelId);
+    if (from == null || to == null) {
+      this.dispatch({ type: 'user_next' });
+      return;
+    }
+    const deltaM = to - from;
+    if (/stairs/.test(step.maneuver)) {
+      for (let i = 0; i < Math.round(Math.abs(deltaM) / RISER_M); i++) altimeter.onStairStep(deltaM > 0 ? 1 : -1);
+    } else {
+      altimeter.onRide({ deltaM: +(deltaM * 0.97).toFixed(2), durationS: 8, peakAccel: 0.6 });
     }
   }
 
@@ -357,11 +405,18 @@ export class GuidanceEngine {
     const now = performance.now();
     const dtS = (now - this.lastTickAt) / 1000;
     this.lastTickAt = now;
-    const moving = this.sensor?.moving ?? false;
+    const demo = Boolean(this.options.simulateWalk);
+    const moving = demo || (this.sensor?.moving ?? false);
     this.dispatch({ type: 'tick', dtS, moving });
 
     const t = this.snap.tracker;
     const active = t.phase === 'navigating' || t.phase === 'approaching';
+    if (demo) {
+      // The presenter stands still: no compass cues, no camera hunting; floors change through the altimeter.
+      this.beacon.setDelta(null);
+      if (active) this.simulateFloorChange(now);
+      return;
+    }
     const reliable = this.sensor?.headingReliable ?? false;
     const delta = active && reliable ? this.currentDelta() : null;
 

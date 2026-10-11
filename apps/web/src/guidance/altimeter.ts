@@ -235,8 +235,8 @@ export class Altimeter {
   }
 
   onRide(ride: Ride, now = Date.now()): void {
-    // Longer rides drift more; ~0.6 m plus 15 % of the distance.
-    this.belief.shift(ride.deltaM, 0.6 + 0.15 * Math.abs(ride.deltaM));
+    // Longer rides drift more: ~0.5 m plus 10 % of the distance (simulated rides measured within ~1 m).
+    this.belief.shift(ride.deltaM, 0.5 + 0.1 * Math.abs(ride.deltaM));
     this.state.lastRide = { ...ride, at: now };
     this.update('elevator');
   }

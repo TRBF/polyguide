@@ -75,6 +75,7 @@ export type AppCommand =
   | { type: 'elevator_broken' }
   | { type: 'change_needs' }
   | { type: 'start_over' }
+  | { type: 'system_check' }
   | { type: 'yes' }
   | { type: 'no' }
   | { type: 'repeat_slower' }
@@ -85,6 +86,7 @@ export function parseAppCommand(transcript: string): AppCommand | null {
   if (/^(?:emergency|it's an emergency|call (?:for )?help|call an ambulance|call 112|call 144|i need (?:urgent|emergency) help|help me please|i am hurt|i'm hurt|i fell|i have fallen|sos)$/.test(text)) return { type: 'emergency' };
   if (/\b(?:elevator|lift)\b.*\b(?:not working|broken|out of order|out of service|closed|doesn't work|does not work|isn't working|is not working|won't come|stuck)\b|^(?:broken|no) (?:elevator|lift)$/.test(text)) return { type: 'elevator_broken' };
   if (/^(?:change|edit|update) (?:my )?(?:needs|profile|preferences)$/.test(text)) return { type: 'change_needs' };
+  if (/^(?:system check|status check|check the system|run (?:a )?(?:system check|diagnostics)|is everything working|systemcheck)$/.test(text)) return { type: 'system_check' };
   if (/^(?:start over|start again|restart|reset|start from scratch|new (?:trip|route|destination)|(?:plan |make )?(?:a |another )?new route|another (?:route|trip|destination)|cancel (?:the |this )?(?:route|trip)|clear (?:the |this )?(?:route|trip)|neue route|von vorne)$/.test(text)) return { type: 'start_over' };
   if (/^(?:yes|yeah|yep|yes please|correct|that's right|ok|okay|sure|sounds good|go ahead|let's go)$/.test(text)) return { type: 'yes' };
   if (/^(?:no|nope|no thanks|wrong|that's wrong|not that one)$/.test(text)) return { type: 'no' };
