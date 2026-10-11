@@ -229,6 +229,16 @@ h1, h2 { font-weight: 700; letter-spacing: -.01em; }
 .sheet-backdrop { position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-end; justify-content: center; background: rgba(0,0,0,.6); }
 .sheet { width: min(100%, var(--page)); max-height: 88dvh; overflow: auto; padding: var(--sp-4); border-radius: var(--r-lg) var(--r-lg) 0 0; background: var(--s1); border: 1px solid var(--line); display: grid; gap: var(--sp-3); }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; }
+.check-summary { color: var(--muted); font-weight: 700; }
+.check-list { display: grid; gap: var(--sp-2); padding: 0; margin: 0; list-style: none; }
+.check { display: flex; align-items: flex-start; gap: var(--sp-3); padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--s2); }
+.check-icon { flex: 0 0 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; font-weight: 700; background: var(--s3); color: var(--muted); }
+.check-ok .check-icon { background: var(--go); color: #04210f; }
+.check-warn .check-icon { background: var(--accent); color: var(--accent-ink); }
+.check-fail .check-icon { background: var(--danger-solid); color: #fff; }
+.check-text { display: grid; gap: 2px; }
+.check-text small { color: var(--muted); font-size: var(--t-sm); }
+.demo-badge { display: inline-block; margin-top: 4px; padding: 2px 8px; border-radius: 999px; background: var(--from); color: #00142b; font-size: 12px; font-weight: 700; letter-spacing: .04em; }
 .sheet-warnings { display: grid; gap: var(--sp-2); padding: 0; list-style: none; color: var(--muted); font-size: var(--t-sm); }
 .sheet-warnings li { padding-left: var(--sp-3); border-left: 3px solid var(--accent); }
 .step-list { padding: 0; list-style: none; }

@@ -18,6 +18,7 @@ import {
 } from '@polyguide/shared';
 import { api } from './api';
 import { captureRoomSignFrame, releaseScreenWakeLock, requestAppPermissions, requestScreenWakeLock } from './camera';
+import { SystemCheck } from './SystemCheck';
 import { CameraBackdrop, CameraPeek, RouteSheet } from './views';
 import { VoiceBar, type VoiceBarHandle } from './VoiceBar';
 import { configureSpeech, isSpeaking, onSpeakingChange, speak, stopSpeech } from './voice/tts';
@@ -186,6 +187,7 @@ export function App() {
   /** Elevators the user reported as out of service this session; every new route avoids them. */
   const [avoidElevators, setAvoidElevators] = useState<string[]>([]);
   const [emergencyOpen, setEmergencyOpen] = useState(false);
+  const [systemCheckOpen, setSystemCheckOpen] = useState(false);
   /** Two misunderstandings in a row: offer help instead of repeating "I did not understand". */
   const misunderstood = useRef(0);
   /** What the user last said or typed, shown back so they can see what was understood. */
@@ -284,6 +286,9 @@ export function App() {
       if (cancelled) return;
       altimeter.setLevels(levels.filter((l) => l.elevationM != null).map((l) => ({ id: l.id, elevationM: l.elevationM! })));
     }).catch(() => undefined);
+    // Warm-up: one silent agent call while the welcome is spoken, so the model and its cached building prompt are
+    // hot and the user's first real sentence is answered fast. Its answer is ignored.
+    void api.agent({ utterance: 'hello', context: { phase: 'trip', needs: [] } }).catch(() => undefined);
     return () => { cancelled = true; };
   }, [started]);
   /** While a tool runs, announcements go back to the model (it says them) instead of being spoken over it. */
@@ -326,12 +331,27 @@ export function App() {
   }, []);
 
   const onGuidanceRouteChange = useCallback((nextRoute: Route) => setRoute(nextRoute), []);
+  const demoWalk = preferences.settings.demoWalk;
   const guidance = useGuidance(route, profile, {
     onSpeak: onGuidanceSpeak,
     onRouteChange: onGuidanceRouteChange,
-    beaconEnabled: preferences.settings.beaconEnabled,
-    visionEnabled: cameraGranted,
+    beaconEnabled: preferences.settings.beaconEnabled && !demoWalk,
+    // A camera pointed at a presentation room would only add noise to a simulated walk.
+    visionEnabled: cameraGranted && !demoWalk,
+    simulateWalk: demoWalk,
   });
+
+  // A presenter link: ?demo turns the demo walk on (and ?demo=0 off), then the URL is tidied up.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('demo')) return;
+    const on = params.get('demo') !== '0';
+    updatePreferences((current) => ({ ...current, settings: { ...current.settings, demoWalk: on } }));
+    params.delete('demo');
+    const query = params.toString();
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     savePreferences(preferences);
@@ -458,12 +478,21 @@ export function App() {
       go();
       return;
     }
-    const off = onSpeakingChange((speaking) => {
-      if (speaking) return;
+    let started = false;
+    const once = () => {
+      if (started) return;
+      started = true;
       off();
+      window.clearTimeout(timer);
       go();
-    });
-    return off;
+    };
+    const off = onSpeakingChange((speaking) => { if (!speaking) once(); });
+    // Some browsers never report the end of speech (a known Chrome Android bug): never let that hold navigation.
+    const timer = window.setTimeout(once, 7000);
+    return () => {
+      off();
+      window.clearTimeout(timer);
+    };
   }, [guidance.start, route?.routeId, screen, startAfterRoute]);
 
   // Every change of movement is felt: each new step (and arrival, and a reroute's first step) buzzes the
@@ -1503,6 +1532,10 @@ export function App() {
       case 'start_over':
         startOver();
         return;
+      case 'system_check':
+        announce('Running a system check.');
+        setSystemCheckOpen(true);
+        return;
       case 'yes':
         // "Are you near HG F 41?" asked by the jump gate comes first: it is the most recent question.
         if (positionGate.holding && await confirmHeldFix()) return;
@@ -2220,6 +2253,7 @@ export function App() {
             <div className="hud-trip">
               <h1 id="hud-title">To {displayName(route.to)}{route.to.label && route.to.kind === 'room' ? `, ${route.to.label}` : ''}</h1>
               <p>Step {Math.min(guidance.stepIndex + 1, route.steps.length)} of {route.steps.length}, {Math.round(guidance.remainingTotalM)} m to go{floorSensor.levelId && floorSensor.probability >= 0.7 ? ` · floor ${floorSensor.levelId.split('.').at(-1)}` : ''}</p>
+              {demoWalk && <span className="demo-badge">DEMO · simulated walk</span>}
             </div>
             <button type="button" className="hud-pill hud-pill-danger" onClick={() => void runAppCommand('emergency')}>Emergency</button>
           </header>
@@ -2345,6 +2379,11 @@ export function App() {
             <span><strong>History</strong></span>
             <button className="button button-ghost" type="button" onClick={() => { clearRecents(); announce('Recent places cleared.'); }}>Clear recent places</button>
           </div>
+          <div className="setting-control">
+            <span><strong>System check</strong><small>Tests every part live: map, routing, AI, speech, camera, sensors. Or say: system check.</small></span>
+            <button className="button button-ghost" type="button" onClick={() => setSystemCheckOpen(true)}>Run system check</button>
+          </div>
+          <label className="toggle-row"><input type="checkbox" checked={demoWalk} onChange={(event) => updatePreferences((current) => ({ ...current, settings: { ...current.settings, demoWalk: event.target.checked } }))} /><span><strong>Demo walk (presentations)</strong><small>Walks the route at a calm pace without moving, and rides elevators through the floor sensor. Shown as DEMO on screen.</small></span></label>
           {survey?.enabled && (
             <form className="setting-control survey" onSubmit={(event) => void captureSpot(event)}>
               <span><strong>Survey: teach PolyGuide this spot</strong><small>Team only. Stand at a room door or landmark, type where you are, point the camera along the corridor, then capture. Only a text description is stored, never the photo. {survey.total} spots saved.</small></span>
@@ -2370,6 +2409,16 @@ export function App() {
             </div>
           </section>
         </div>
+      )}
+
+      {systemCheckOpen && (
+        <SystemCheck
+          cameraGranted={cameraGranted}
+          sensors={sensors}
+          liveVoice={rtStatus}
+          onClose={() => setSystemCheckOpen(false)}
+          onSummary={(spoken) => announce(spoken, 'info')}
+        />
       )}
 
       {sheetOpen && route && (

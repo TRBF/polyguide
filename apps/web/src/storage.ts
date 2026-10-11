@@ -16,6 +16,8 @@ export interface AppSettings {
   permissionsGranted: boolean;
   /** Speech-to-speech agent (OpenAI Realtime) that also sees the camera; off = recognizer + text agent. */
   realtimeVoice: boolean;
+  /** Presentations: simulated walking along the route (clearly labelled on screen). */
+  demoWalk: boolean;
 }
 
 export interface Preferences {
@@ -38,6 +40,7 @@ export const defaultPreferences: Preferences = {
     textScale: 1,
     permissionsGranted: false,
     realtimeVoice: true,
+    demoWalk: false,
   },
 };
 
@@ -78,6 +81,7 @@ export function loadPreferences(): Preferences {
         textScale: settingsData.textScale === 1.25 || settingsData.textScale === 1.5 ? settingsData.textScale : 1,
         permissionsGranted: settingsData.permissionsGranted === true,
         realtimeVoice: settingsData.realtimeVoice !== false,
+        demoWalk: settingsData.demoWalk === true,
       },
     };
   } catch {
