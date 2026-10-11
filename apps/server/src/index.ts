@@ -13,6 +13,7 @@ import { devRoutes } from './devCompare';
 import { apiRoutes } from './routes';
 import { rateLimit } from './rateLimit';
 import { sameOriginApi, securityHeaders } from './security';
+import { whereRoutes } from './where';
 
 const PORT = Number(process.env.PORT ?? 8787);
 // Loopback by default: in development the Vite proxy (and any tunnel) connects locally. Set HOST=0.0.0.0
@@ -71,7 +72,20 @@ if (USE_MOCK) {
     global: Number(process.env.AGENT_RATE_GLOBAL_PER_MIN ?? 150),
     body: (s) => ({ ok: false, reason: 'rate_limited', message: `Too many requests. Try again in ${s} seconds.` }),
   }));
+  // "Where am I?": one camera call (plus an embedding) per question.
+  app.use('/api/where', rateLimit({
+    perClient: Number(process.env.WHERE_RATE_PER_MIN ?? 20),
+    global: Number(process.env.WHERE_RATE_GLOBAL_PER_MIN ?? 100),
+    body: (s) => ({ ok: false, reason: 'rate_limited', message: `Too many location checks. Try again in ${s} seconds.` }),
+  }));
+  // Survey captures (team only, token-locked): a person photographs a few spots a minute.
+  app.use('/api/refs', rateLimit({
+    perClient: 30,
+    global: 60,
+    body: (s) => ({ ok: false, reason: 'rate_limited', message: `Too many captures. Try again in ${s} seconds.` }),
+  }));
   app.route('/api', aiRoutes);
+  app.route('/api', whereRoutes);
 }
 
 app.all('/api/*', (c) => c.json({ ok: false, reason: 'not_found', message: 'Unknown API route.' }, 404));

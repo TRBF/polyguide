@@ -24,7 +24,10 @@ Rules:
    - user_query: answer the user's question in utterance.
    - periodic: only give an utterance if something new and useful is visible, otherwise "".
 9. confidence (0 to 1) reflects how sure you are about atExpectedPoint and the room names.
-10. Mention people only as "a person" or "people". Never describe or identify them.`;
+10. Mention people only as "a person" or "people". Never describe or identify them.
+11. Never ask the user to move, aim, point, tilt, raise, lower or steady the phone, to get closer, to turn, or for more light or another photo. Many users are blind and cannot aim a camera. Work with the frame you have. If nothing useful is readable, describe in a few words what you do see, or leave utterance empty: the app then goes by the route and what the user says.
+12. Room signs hang on walls beside doors: often small, far, at an angle, blurred or partly cut off. Read what you can. When the visible characters agree with one of the expected landmarks (for example "F 3" plus a cut-off digit while "HG F 33" is expected), you may report that expected identifier in detectedRoomNames; put the raw partial text in readText. Never invent an identifier the visible characters do not support.
+13. The user knows where they are better than a blurry photo. If the context says where the user is or they say it in their question, never contradict that unless a sign is clearly and fully readable.`;
 
 const fmtDelta = (d: number | null | undefined) => {
   if (d == null || !Number.isFinite(d)) return 'unknown (compass unavailable)';
@@ -95,13 +98,19 @@ const UNSAFE = /\b(clear|clears|safe|safely|unobstructed|obstacle[- ]free|no obs
 /** German claims of safety (JS \b is ASCII-only, so use Unicode lookarounds). */
 const UNSAFE_DE = /(?<![\p{L}])(frei(e[nrms]?)?|sicher(e[nrms]?)?|ungefährlich|gefahrlos|hindernisfrei|kein(e[nrms]?)? hindernisse?)(?![\p{L}])/iu;
 
+/**
+ * Requests to reposition the camera ("hold the phone higher", "better angle", "more light"). A blind user
+ * cannot act on them; the model is told not to ask, and the camera's sentences are filtered anyway.
+ */
+const CAMERA_REQUEST = /\b(please\s+)?(move|point|aim|tilt|raise|lower|hold|turn|angle|steady|reposition)\b.{0,30}\b(camera|phone|device|lens)\b|\b(camera|phone)\b.{0,30}\b(higher|lower|closer|steady|angle|toward|towards|up|down)\b|\b(better|different|another)\s+(angle|view|photo|picture|image|shot|lighting|light)\b|\bmore\s+(light|lighting|vision|of the (sign|wall))\b|\b(get|move|come)\s+closer\b|\b(too\s+)?(dark|blurry|blurred)\b.{0,20}\b(try|again|retake)\b|\btry\s+again\b/i;
+
 /** Drop any sentence that claims safety, then cap to maxWords. */
-export function sanitizeUtterance(text: string, maxWords = 15): string {
+export function sanitizeUtterance(text: string, maxWords = 15, { cameraRequests = false } = {}): string {
   const sentences = text
     .replace(/\s+/g, ' ')
     .trim()
     .split(/(?<=[.!?])\s+/)
-    .filter((s) => s && !UNSAFE.test(s) && !UNSAFE_DE.test(s));
+    .filter((s) => s && !UNSAFE.test(s) && !UNSAFE_DE.test(s) && !(cameraRequests && CAMERA_REQUEST.test(s)));
   const words = sentences.join(' ').split(' ').filter(Boolean);
   if (words.length <= maxWords) return words.join(' ');
   return words.slice(0, maxWords).join(' ').replace(/[,;:]$/, '') + '.';
@@ -142,14 +151,14 @@ export function postProcessVision(raw: unknown, latencyMs: number): VisionResult
         }))
     : [];
   return {
-    sceneSummary: sanitizeUtterance(typeof r.sceneSummary === 'string' ? r.sceneSummary : '', 30),
+    sceneSummary: sanitizeUtterance(typeof r.sceneSummary === 'string' ? r.sceneSummary : '', 30, { cameraRequests: true }),
     readText: strArr(r.readText, 30),
     detectedRoomNames: splitRoomRanges(strArr(r.detectedRoomNames, 10)),
     seen,
     atExpectedPoint: r.atExpectedPoint === true,
     offRouteSuspected: r.offRouteSuspected === true,
-    notableThings: strArr(r.notableThings, 8).map((t) => sanitizeUtterance(t, 20)).filter(Boolean),
-    utterance: confidence < 0.5 ? '' : sanitizeUtterance(typeof r.utterance === 'string' ? r.utterance : ''),
+    notableThings: strArr(r.notableThings, 8).map((t) => sanitizeUtterance(t, 20, { cameraRequests: true })).filter(Boolean),
+    utterance: confidence < 0.5 ? '' : sanitizeUtterance(typeof r.utterance === 'string' ? r.utterance : '', 15, { cameraRequests: true }),
     confidence,
     latencyMs,
   };

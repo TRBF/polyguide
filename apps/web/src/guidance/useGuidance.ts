@@ -166,8 +166,24 @@ export class GuidanceEngine {
       ? ` ${currentStep.speech || currentStep.text}`
       : ` ${capitalize(speakDist(remainingStepM))} left on this part, ${speakDist(remainingTotalM)} to the destination.`;
     this.speak(where + rest, 'instruction');
-    this.requestVision('user_query', 'Where am I? Read any room sign you can see.');
+    this.requestVision('user_query', 'Where am I? Read the room sign on the nearest wall or door if any part of it is legible. If none is, say in a few words what is around me.');
   };
+
+  /**
+   * What the route says is around the user, for when the camera cannot tell: the next landmark on this
+   * step (or the step's end). The person and the route are trusted over an unreadable photo.
+   */
+  private routeHint(): string {
+    const t = this.snap.tracker;
+    const { currentStep, remainingStepM } = trackerProgress(t);
+    if (!currentStep) return '';
+    const travelled = Math.max(0, currentStep.distanceM - remainingStepM);
+    const next = currentStep.expectedLandmarks.find((l) => l.atDistanceM >= travelled - 3);
+    if (!next) return `Keep following the step: ${currentStep.speech || currentStep.text}`;
+    const side = next.side === 'left' ? ' on your left' : next.side === 'right' ? ' on your right' : next.side === 'ahead' ? ' ahead' : '';
+    const inM = Math.round(next.atDistanceM - travelled);
+    return inM > 3 ? `${next.label} should come${side} in about ${inM} metres.` : `You should be near ${next.label}${side}.`;
+  }
 
   whatsAhead = () => {
     const t = this.snap.tracker;
@@ -372,7 +388,7 @@ export class GuidanceEngine {
   private onVision(res: VisionResponse, req: VisionRequestBody) {
     if (!res.ok) {
       if (res.reason === 'disabled') this.visionUnavailable = true;
-      if (req.trigger === 'user_query') this.speak('The camera check is not available right now.', 'vision');
+      if (req.trigger === 'user_query') this.speak(`The camera check is not available, so I am going by your steps. ${this.routeHint()}`, 'vision');
       return;
     }
     const { ok: _ok, ...result } = res;
@@ -387,7 +403,10 @@ export class GuidanceEngine {
       this.lastVisionUtterance = decision.speak;
       this.speak(decision.speak, 'vision');
     } else if (req.trigger === 'user_query') {
-      this.speak(result.detectedRoomNames.length ? `I can read ${result.detectedRoomNames.join(', ')}.` : 'I cannot make out anything useful in the camera view.', 'vision');
+      // No confident answer: say what could be read, otherwise fall back on the route, never on "try again".
+      this.speak(result.detectedRoomNames.length
+        ? `I can read ${result.detectedRoomNames.join(', ')}.`
+        : `I cannot read a sign from here, so I am going by your steps. ${this.routeHint()}`, 'vision');
     }
   }
 

@@ -88,12 +88,12 @@ describe('VisionController', () => {
     expect(sent.map((s) => s.userQuestion)).toEqual([undefined, 'second']);
   });
 
-  it('uses 1024 px frames for localize, 640 otherwise', async () => {
+  it('sends full-width frames when a wall sign must be read, small ones for background checks', async () => {
     const { c, sent, flush } = setup();
-    c.trigger('localize');
-    await flush();
-    c.trigger('periodic');
-    await flush();
-    expect(sent.map((s) => s.imageJpegBase64)).toEqual(['img1024', 'img640']);
+    for (const trigger of ['localize', 'user_query', 'approaching_node', 'periodic'] as const) {
+      c.trigger(trigger);
+      await flush();
+    }
+    expect(sent.map((s) => s.imageJpegBase64)).toEqual(['img1280', 'img1280', 'img960', 'img640']);
   });
 });

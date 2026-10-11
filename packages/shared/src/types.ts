@@ -383,6 +383,8 @@ export interface AgentContext {
   avoidStairs?: boolean;
   /** Current instruction while navigating. */
   step?: string;
+  /** While navigating: a node on the current step, so "I'm at the elevator" resolves to the one nearby. */
+  nearNodeId?: NodeId;
 }
 
 export interface AgentRequest {
@@ -485,7 +487,54 @@ export const API = {
   vision: '/api/vision/check',
   intent: '/api/intent',
   agent: '/api/agent',
+  where: '/api/where',
+  refs: '/api/refs',
   devCompare: '/api/dev/compare',
 } as const;
+
+/* ───────────── Where am I (camera + graph localization) ───────────── */
+
+export interface WhereRequest {
+  /** A camera frame (base64 JPEG, no data-URL prefix). Optional: without it the answer comes from the prior. */
+  imageJpegBase64?: string;
+  /** Where the route (or the user) last put them: weighs candidates by walking distance from here. */
+  nearNodeId?: NodeId;
+  /** While navigating: the answer says whether the spot is on this route. */
+  routeId?: RouteId;
+  language?: 'en' | 'de';
+}
+
+export type WhereEvidence = 'sign' | 'photo' | 'partial_sign' | 'landmark' | 'route';
+
+export type WhereResponse =
+  | {
+      ok: true;
+      nodeId: NodeId;
+      levelId: LevelId;
+      /** The room or place the description is anchored on: usable as a trip's starting point. */
+      place?: Place;
+      /** One or two spoken sentences: "You are on floor F, near HG F 30, the Audimax. The elevator is …". */
+      description: string;
+      confidence: number;
+      method: WhereEvidence;
+      /** What was read or recognised, for the screen ("Read: HG F 33.2"). */
+      evidence: string[];
+      /** With routeId: false = clearly away from the route (reroute), null = unknown. */
+      onRoute?: boolean | null;
+      latencyMs: number;
+    }
+  | { ok: false; reason: 'no_evidence' | 'disabled' | 'timeout' | 'model_error' | 'rate_limited' | 'invalid_request'; message: string };
+
+export interface RefCaptureRequest {
+  imageJpegBase64: string;
+  /** The spot being captured: a graph node, or a place (its node is used). */
+  nodeId?: NodeId;
+  placeId?: PlaceId;
+  headingDeg?: number;
+}
+
+export type RefCaptureResponse =
+  | { ok: true; id: string; nodeId: NodeId; levelId: LevelId; signs: string[]; fingerprint: string; total: number }
+  | { ok: false; reason: 'disabled' | 'unauthorized' | 'invalid_request' | 'model_error' | 'timeout' | 'rate_limited'; message: string };
 
 export const ETH_ARCGIS_BASE = 'https://arcgis-prd-web.ethz.ch/server/rest/services/EGDB';
